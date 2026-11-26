@@ -54,4 +54,4 @@ clean:
 	rm -f TINY.SYSTEM FILETEST.SYSTEM RWTEST.SYSTEM MACTEST.SYSTEM WIDETEST.SYSTEM MACFULL.SYSTEM MACBENCH.SYSTEM *.SYSTEM.elf tiny-mos.map wide-test.map tiny-linux tiny-reader-linux tiny-apple-mock
 
 test:
-	mame -w apple2ee -aux rw3 -sl7 cffa202 -hard1 tiny.po -nothrottle -natural
+	mame -w apple2ee -aux rw3 -sl7 cffa202 -hard1 tiny.po -nothrottle -natural -console -frameskip 0
