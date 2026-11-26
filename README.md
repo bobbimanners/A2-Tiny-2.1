@@ -165,13 +165,13 @@ The conversion is a one-time operation. Python and the original training softwar
 
 ### 2. Build the Apple II executable
 
-In the directory containing the Apple II source files, use the corrected Stage 8B C source (`tiny-stage8b.c`) and the zero-page-compatible assembly kernel (`tiny-mac65-zp.s`):
+In the directory containing the Apple II source files, use the corrected Stage 8B C source (`tiny.c`) and the zero-page-compatible assembly kernel (`tiny-mac65-zp.s`):
 
 ```sh
 cl65 -t apple2enh -O \
     --ld-args '-D__EXEHDR__=0,-D__HIMEM__=0xBF00' \
     -m tiny.map -o TINY \
-    tiny-stage8b.c tiny-rw65.c tiny-rw65-asm.s tiny-mac65-zp.s
+    tiny.c tiny-rw65.c tiny-rw65-asm.s tiny-mac65-zp.s
 ```
 
 This builds a raw BIN executable linked at `$0803`. Loading at `$0803` rather than the standard SYS address of `$2000` makes approximately 6 KiB more main memory available to the application. The `__HIMEM__` override is important, and linker options passed through `--ld-args` must be comma-separated.
@@ -238,7 +238,7 @@ The same Stage 8B source can be built as a standalone Linux application, with th
 
 ```sh
 gcc -std=c99 -O2 -Wall -Wextra -DTINY_SMALL \
-    tiny-stage8b.c -o tiny-linux
+    tiny.c -o tiny-linux
 
 ./tiny-linux -q 'what is the capital of france?'
 ./tiny-linux --profile --banks -q 'what is the capital of france?'
