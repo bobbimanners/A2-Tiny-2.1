@@ -252,7 +252,7 @@ gcc -std=c99 -O2 -Wall -Wextra -DTINY_SMALL \
 
 On the Apple II, enter `:check`, then `abc`, and compare the printed position, input token, shared binary exponent and FNV-1a hash with the Linux output. This checks the raw fixed-point logit mantissas without requiring a large diagnostic dump from the Apple II.
 
-The Stage 7C assembly test harness can also be run independently of the transformer:
+The assembly test harness can also be run independently of the transformer:
 
 ```sh
 cl65 -t sim65c02 -O -o mac65-test tiny-mac65-test.c tiny-mac65-zp.s
@@ -260,7 +260,7 @@ sim65 mac65-test full
 sim65 -c mac65-test bench
 ```
 
-The original Stage 7C assembly passed the exhaustive signed-byte multiplication test and the dot-product and weighted-accumulation tests in `sim65`. The benchmark produced the expected checksum of `41417000` for 256,000 MACs.
+The original assembly passed the exhaustive signed-byte multiplication test and the dot-product and weighted-accumulation tests in `sim65`. The benchmark produced the expected checksum of `41417000` for 256,000 MACs.
 
 ## Performance (or lack thereof)
 
@@ -280,7 +280,7 @@ Possible future work:
 
 ## Status
 
-The original trained model has been successfully exercised through the intermediate Linux implementations, the Stage 7C arithmetic kernels have passed tests in `sim65`, and native ProDOS inference has produced a correct answer in MAME. The screenshot above documents that milestone. Comprehensive Apple II regression tests, measured performance and verification on physical hardware remain future work.
+The original trained model has been successfully exercised through the intermediate Linux implementations, the arithmetic kernels have passed tests in `sim65`, and native ProDOS inference has produced a correct answer in MAME. The screenshot above documents that milestone. Comprehensive Apple II regression tests, measured performance and verification on physical hardware remain future work.
 
 ## Acknowledgements and licensing
 
