@@ -165,7 +165,7 @@ The conversion is a one-time operation. Python and the original training softwar
 
 ### 2. Build the Apple II executable
 
-In the directory containing the Apple II source files, use the corrected Stage 8B C source (`tiny.c`) and the zero-page-compatible assembly kernel (`tiny-mac65-zp.s`):
+In the directory containing the Apple II source files, use the C source (`tiny.c`) and the zero-page-compatible assembly kernel (`tiny-mac65-zp.s`):
 
 ```sh
 cl65 -t apple2enh -O \
@@ -234,7 +234,7 @@ In MAME, enable a RamWorks-compatible expansion and attach your ProDOS boot and 
 
 ## Testing on Linux
 
-The same Stage 8B source can be built as a standalone Linux application, with the RamWorks memory backend simulated and the portable C MAC kernels selected automatically:
+The same source can be built as a standalone Linux application, with the RamWorks memory backend simulated and the portable C MAC kernels selected automatically:
 
 ```sh
 gcc -std=c99 -O2 -Wall -Wextra -DTINY_SMALL \
