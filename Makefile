@@ -2,6 +2,8 @@ tiny.po: tiny TINY.INT
 	mv tiny TINY#060803
 	mv TINY.INT TINY.INT#060000
 	cadius createvolume tiny.po TINY 800KB
+	cadius addfile tiny.po /TINY prodos.242/PRODOS#FF0000
+	cadius addfile tiny.po /TINY prodos.242/BASIC.SYSTEM#FF2000
 	cadius addfile tiny.po /TINY TINY.SYSTEM#FF0000   # LOADER.SYSTEM from cc65
 	cadius addfile tiny.po /TINY TINY#060803 
 	cadius addfile tiny.po /TINY TINY.INT#060000 
@@ -14,3 +16,6 @@ TINY.INT: TINY.BIN
 
 clean:
 	rm *.o TINY#060803 TINY.INT#060000
+
+test:
+	mame -w apple2ee -aux rw3 -sl7 cffa202 -hard1 tiny.po -nothrottle -natural
