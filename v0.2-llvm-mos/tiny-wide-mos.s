@@ -1,4 +1,4 @@
-; Stage 11B: LLVM-MOS Apple II 65C02 wide arithmetic.
+; Stage 11G: LLVM-MOS Apple II 65C02 wide arithmetic.
 ; ABI: pointer args in rc2/3, rc4/5, rc6/7; int args/returns A:X.
 ; Apple2 maps rc0..31 to $00..$1f. No callee-saved registers touched.
 ; D must be clear (normal C environment). No IRQ/reentrant use.
@@ -27,7 +27,7 @@ MLIM = $10
 .Lround: .space 1
 .section .text,"ax",@progbits
 .global wa, ws, wneg, wmag, winc, wz, wn, wc, wcs, wl, wr, wbit, topbit, wm
-.global tiny_wdiv, tiny_wrounddiv
+.global tiny_wdiv, tiny_wrounddiv, tiny_rescale
 ; Binary operations. Carry preserved by INY/DEX/BNE.
 wa:
     ldy #0
@@ -368,24 +368,31 @@ wm:
     sbc .Lb+7
     sta .Lb+7
 .Lbpos:
-    ; Find significant byte counts (1..8); zero operands return zero.
     ldy #7
+    ldx #7
+    jsr .Lmul_unsigned
+    jmp .Lsignedout
+; Multiply magnitudes in La/Lb into cleared Lq.
+; Y and X specify highest possible nonzero byte of A and B.
+; R/P/B and Lsign are preserved. A zero operand leaves Lq zero.
+.Lmul_unsigned:
 .LscanA:
     lda .La,y
     bne .LfoundA
     dey
     bpl .LscanA
-    jmp .Lstoreq
+    rts
 .LfoundA:
     iny
     sty MLA
-    ldy #7
+    txa
+    tay
 .LscanB:
     lda .Lb,y
     bne .LfoundB
     dey
     bpl .LscanB
-    jmp .Lstoreq
+    rts
 .LfoundB:
     iny
     sty MLB
@@ -488,6 +495,8 @@ wm:
     bcs .Lmulend
     jmp .Lmulouter
 .Lmulend:
+    rts
+.Lsignedout:
     bit .Lsign
     bpl .Lmulout
     sec
@@ -517,6 +526,56 @@ wm:
     sta .Lq+7
 .Lmulout:
     jmp .Lstoreq
+; Matrix rescaling: signed 24-bit dot * unsigned 24-bit scale *
+; unsigned 15-bit peak, yielding a signed 64-bit result.
+; R = Wide output, P = little-endian row scale (4 bytes, top byte 0),
+; B = TinyRescaleArgs { int32_t dot; uint16_t peak; }.
+; Only the dot can be negative. Convert its magnitude once, then use
+; the bounded unsigned multiply core twice, applying the sign at end.
+tiny_rescale:
+    ldy #2
+.Lrsload:
+    lda (B),y
+    sta .La,y
+    lda (P),y
+    sta .Lb,y
+    dey
+    bpl .Lrsload
+    lda .La+2
+    sta .Lsign
+    bpl .Lrspositive
+    sec
+    lda #0
+    sbc .La
+    sta .La
+    lda #0
+    sbc .La+1
+    sta .La+1
+    lda #0
+    sbc .La+2
+    sta .La+2
+.Lrspositive:
+    jsr .Lclearq
+    ldy #2
+    ldx #2
+    jsr .Lmul_unsigned
+    ldy #5
+.Lrscopy:
+    lda .Lq,y
+    sta .La,y
+    dey
+    bpl .Lrscopy
+    ldy #4
+    lda (B),y
+    sta .Lb
+    iny
+    lda (B),y
+    sta .Lb+1
+    jsr .Lclearq
+    ldy #5
+    ldx #1
+    jsr .Lmul_unsigned
+    jmp .Lsignedout
 ; Unsigned divide. C wrapper checks divisor != 0. Inputs copied before
 ; writes; quotient in q, remainder in a. Rounded entry returns nearest,
 ; ties upward, directly using remainder (no second multiplication).
