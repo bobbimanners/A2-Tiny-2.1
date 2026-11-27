@@ -130,11 +130,11 @@ static void die(const char *s) {
     exit(1);
 }
 /* Reserve bank 0 for the normal auxiliary display/system environment.
- * Only $2000..$BFFF of banks 1..127 is available to the allocator.
+ * Only $4000..$BFFF of banks 1..127 is available to the allocator.
  * This is a conservative proposed layout, not an Apple II MMU emulator.
  * No inference code may dereference simulated auxiliary memory directly. */
 #define RW_BANKS 128u
-#define RW_LO 0x2000u
+#define RW_LO 0x4000u
 #define RW_HI 0xc000u
 #define RW_SIZE (RW_HI-RW_LO)
 #ifndef TINY_APPLE2
@@ -154,7 +154,7 @@ static void rw_next(void) {
     ++rw_next_bank;rw_next_off=RW_LO;
     if(rw_next_bank>=RW_BANKS)die("RamWorks capacity exceeded");
 #ifdef TINY_APPLE2
-    if(rw_next_bank>12u)die("model exceeds 12 verified banks");
+    if(rw_next_bank>15u)die("model exceeds 15 verified banks");
 #endif
 }
 static void rw_alloc(Region *r,unsigned rows,unsigned stride) {
@@ -1391,15 +1391,15 @@ int main(void) {
 #if !defined(TINY_PRODOS_HOST_TEST)
     __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory"); // HOME
 #endif
-    puts("TINY v0.2 / Stage 11P");
+    puts("TINY v0.2 / Stage 11Q");
     puts("Apple //e / LLVM-MOS / RamWorks");
 #ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)
     reserve_scratch();
 #endif
 #endif
-    puts("Banks 1-12 reserved for TINY.");
-    bad=tiny_rw_probe();if(bad){
+    puts("Banks 1-15 reserved for TINY.");
+    bad=tiny_rw_probe();if(bad==255u)die("RAM copy outside HGR page");if(bad){
 #ifdef TINY_MOS
         out_str("Bank probe failed: ");out_u32(bad);putchar('\n');die("RamWorks probe");
 #else

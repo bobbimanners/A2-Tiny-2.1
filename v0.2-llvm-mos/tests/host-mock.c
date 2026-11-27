@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "tiny-rw65.h"
-static uint8_t ram[13][65536];
+static uint8_t ram[TINY_RW_LAST_BANK+1][65536];
 void tiny_rw_read(unsigned b,unsigned a,void *p,unsigned n){memcpy(p,ram[b]+a,n);}
 void tiny_rw_write(unsigned b,unsigned a,const void *p,unsigned n){memcpy(ram[b]+a,p,n);}
 unsigned tiny_rw_probe(void){return 0;}
