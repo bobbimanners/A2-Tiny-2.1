@@ -1,4 +1,4 @@
-; TINY stage 11K - biased unsigned dot accumulation.
+; TINY stage 11O - prepared matrix MAC, plus general 11K kernels.
 ; Dot uses self-modifying absolute,Y loads and an immediate loop limit.
 ; Requires writable main-memory code; not reentrant. No new ZP reservation.
 ; Globals are provided by C. Non-reentrant, no bank switching.
@@ -7,6 +7,7 @@
 ;       low 24 bits accumulated, high byte sign-extended each time.
 ;       caller guarantees <= 128 terms per slot, n <= 128.
 .global tiny_mac65_dot, tiny_mac65_axpy
+.global tiny_mac65_prepare, tiny_mac65_prepared_dot
 
 ; Private zero page, reserved by -mreserve-zp=6.
 .section .zp.bss,"aw",@nobits
@@ -251,3 +252,91 @@ tiny_mac65_axpy:
  .Ltiny_mac65_axpy_done:
     rts
 
+
+; Matrix-only fast path. Prepare once per projection, then call prepared_dot
+; for each row. tiny_mac_a = fixed weight buffer, tiny_mac_b = writable
+; 512-byte activation workspace, tiny_mac_n = 1..256. q8 guarantees signed
+; activations -127..127 (weights may be -128). Prepare replaces the first
+; plane with u=a+128 and writes 256-u to the second plane. Both fit in a
+; byte. Q[u+v]-Q[256-u+v] == a*b for v=b+128, by Q symmetry.
+; All prepared state survives unrelated routines in patched code and the
+; workspace. Do not change tiny_mac_n or run prepare again until done.
+tiny_mac65_prepare:
+    cld
+    lda tiny_mac_a
+    sta .Lprepared_weight+1
+    lda tiny_mac_a+1
+    sta .Lprepared_weight+2
+    lda tiny_mac_b
+    sta bp
+    sta cp
+    sta .Lprepared_pos+1
+    sta .Lprepared_neg+1
+    lda tiny_mac_b+1
+    sta bp+1
+    sta .Lprepared_pos+2
+    inc a
+    sta cp+1
+    sta .Lprepared_neg+2
+    lda tiny_mac_n
+    sta .Lprepared_limit+1
+    ldy #0
+.Lprepare_loop:
+    lda (bp),y
+    eor #$80
+    sta (bp),y
+    eor #$ff
+    inc a
+    sta (cp),y
+    iny
+    cpy tiny_mac_n
+    bne .Lprepare_loop
+    rts
+
+tiny_mac65_prepared_dot:
+    cld
+    stz $0e
+    stz $0f
+    stz $10
+    ldy #0
+.Lprepared_loop:
+.Lprepared_pos:
+    lda $ffff,y
+    sta .Lprepared_pluslo+1
+    sta .Lprepared_plushi+1
+.Lprepared_neg:
+    lda $ffff,y
+    sta .Lprepared_minuslo+1
+    sta .Lprepared_minushi+1
+.Lprepared_weight:
+    lda $ffff,y
+    eor #$80
+    tax
+    sec
+.Lprepared_pluslo:
+    lda ql,x
+.Lprepared_minuslo:
+    sbc ql,x
+    sta $0c
+.Lprepared_plushi:
+    lda qh,x
+.Lprepared_minushi:
+    sbc qh,x
+    eor #$80
+    tax
+    clc
+    lda $0c
+    adc $0e
+    sta $0e
+    txa
+    adc $0f
+    sta $0f
+    bcc 9f
+    inc $10
+9:
+    iny
+.Lprepared_limit:
+    cpy #0
+    bne .Lprepared_loop
+    ; Shared 11K bias correction and result sign extension.
+    jmp .Ltiny_mac65_dot_done

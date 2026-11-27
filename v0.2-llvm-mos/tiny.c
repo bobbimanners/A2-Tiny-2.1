@@ -519,7 +519,12 @@ typedef struct {
     } phase;
     union {
         Wide attention_result[MAXD];
+#ifdef TINY_MOS
+        /* Prepared MAC uses two 256-byte planes inside this union. */
+        int8_t matvec_q[2*MAXHID];
+#else
         int8_t matvec_q[MAXHID];
+#endif
     } projection;
     int32_t attention_accum[MAXD];
     int attention_exps[CTX], attention_out_exp[MAXD];
@@ -611,10 +616,19 @@ int8_t tiny_mac_coeff;
 int32_t *tiny_mac_acc;
 extern void tiny_mac65_dot(void);
 extern void tiny_mac65_axpy(void);
+#ifdef TINY_MOS
+extern void tiny_mac65_prepare(void);
+extern void tiny_mac65_prepared_dot(void);
+#endif
 static int32_t dot8_chunk(const int8_t *a,const int8_t *b,int n) {
     tiny_mac_a=a; tiny_mac_b=b; tiny_mac_n=(uint16_t)n;
     tiny_mac65_dot(); return tiny_mac_result;
 }
+#ifdef TINY_MOS
+/* Native matrix rows now use prepared_dot. The remaining dot8 caller
+ * is attention, with HD <= MAXD <= 96, so no chunking is needed. */
+#define dot8 dot8_chunk
+#else
 static int32_t dot8(const int8_t *a,const int8_t *b,int n) {
     int32_t sum=0;
     /* 512 arbitrary signed byte pairs can exceed signed 24-bit by one.
@@ -622,6 +636,7 @@ static int32_t dot8(const int8_t *a,const int8_t *b,int n) {
     while(n>511) {sum+=dot8_chunk(a,b,256);a+=256;b+=256;n-=256;}
     return sum+dot8_chunk(a,b,n);
 }
+#endif
 static void axpy8(int32_t *accum,int8_t c,const int8_t *v,int n) {
     tiny_mac_acc=accum;tiny_mac_coeff=c;tiny_mac_b=v;
     tiny_mac_n=(uint16_t)n;tiny_mac65_axpy();
@@ -738,6 +753,14 @@ static void matvec(const Table *t,const Vec *src,Vec *dst) {
 #else
     Wide a;
 #endif
+#ifdef TINY_MOS
+    /* q8 emits [-127,127], so the biased offsets are both nonzero.
+     * Prepare once; rowbuf and the vector length stay fixed across rows. */
+    tiny_mac_a=(const int8_t *)(rowbuf+4);
+    tiny_mac_b=q;
+    tiny_mac_n=(uint16_t)t->cols;
+    tiny_mac65_prepare();
+#endif
     /* rw_alloc packs complete records consecutively, skipping only the
      * unusable tail of a bank. Walk that layout without mul/div per row. */
     for(r=0;r<t->rows;r++){
@@ -745,10 +768,17 @@ static void matvec(const Table *t,const Vec *src,Vec *dst) {
         rw_read_at(bank,off,rowbuf,n);
         off+=n;
 #if defined(TINY_MOS) && defined(TINY_WIDE_ASM)
-        args.dot=dot8((const int8_t *)(rowbuf+4),q,t->cols);
+        tiny_mac65_prepared_dot();
+        args.dot=tiny_mac_result;
         tiny_rescale(&wide[r],rowbuf,&args);
 #else
-        wi(&a,dot8((const int8_t *)(rowbuf+4),q,t->cols));wmi(&a,&a,signed32(get32(rowbuf)));wmu(&wide[r],&a,(uint32_t)m);
+#ifdef TINY_MOS
+        tiny_mac65_prepared_dot();
+        wi(&a,tiny_mac_result);
+#else
+        wi(&a,dot8((const int8_t *)(rowbuf+4),q,t->cols));
+#endif
+        wmi(&a,&a,signed32(get32(rowbuf)));wmu(&wide[r],&a,(uint32_t)m);
 #endif
     }
     pack(dst,wide,t->rows,e);
@@ -1354,7 +1384,7 @@ int main(void) {
 #if !defined(TINY_PRODOS_HOST_TEST)
     __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory"); // HOME
 #endif
-    puts("TINY v0.2 / Stage 11N");
+    puts("TINY v0.2 / Stage 11O");
     puts("Apple //e / LLVM-MOS / RamWorks");
 #ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)

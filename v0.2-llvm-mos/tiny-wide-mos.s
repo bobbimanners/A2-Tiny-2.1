@@ -1018,11 +1018,11 @@ tiny_q8_vector:
     ldy #0
     sta (P),y
     clc
-    lda R
+    lda $02
     adc #2
-    sta R
+    sta $02
     bcc .Lq8srcok
-    inc R+1
+    inc $03
 .Lq8srcok:
     inc P
     bne .Lq8dstok
