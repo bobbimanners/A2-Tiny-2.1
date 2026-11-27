@@ -122,7 +122,15 @@ static uint32_t att_factor; /* 2^44 / (127^2 * sqrt(HD)) */
 #ifdef TINY_AUX0_LUT
 #define AUX_LUT_SIZE 3456u
 #define AUX_LUT_ADDR 0x4000u
-#define AUX_LUT_BACKUP (0xc000u-AUX_LUT_SIZE)
+#define AUX_EXP_ADDR (AUX_LUT_ADDR+AUX_LUT_SIZE)
+#define AUX_EXP_RESERVE 256u
+#define AUX_BORROW_SIZE (AUX_LUT_SIZE+AUX_EXP_RESERVE)
+#define AUX_LUT_BACKUP (0xc000u-AUX_BORROW_SIZE)
+#if !defined(TINY_PRODOS_HOST_TEST)
+extern const uint8_t tiny_aux_exp_image[],tiny_aux_exp_image_end[];
+extern const uint8_t tiny_aux_exp_gate_end[];
+void tiny_aux_exp(uint32_t *d);
+#endif
 /* Initialized as the compact LUT in the SYS file. After the model is
  * loaded, move the table to aux bank zero, then reuse its main RAM. */
 typedef union {
@@ -1079,19 +1087,28 @@ static const uint8_t exp_lut_compact[1152][3] = {
  * Restore on normal exit (including EOF) and application errors. */
 static void aux_lut_copy(unsigned from,unsigned src,unsigned to,unsigned dst) {
     unsigned i,n;
-    for(i=0;i<AUX_LUT_SIZE;i+=n){
-        n=AUX_LUT_SIZE-i;
+    for(i=0;i<AUX_BORROW_SIZE;i+=n){
+        n=AUX_BORROW_SIZE-i;
         if(n>ROWBUF_SIZE)n=ROWBUF_SIZE;
         tiny_rw_read(from,src+i,rowbuf,n);
         tiny_rw_write(to,dst+i,rowbuf,n);
     }
 }
 static void aux_lut_begin(void) {
+#if !defined(TINY_PRODOS_HOST_TEST)
+    unsigned n=(unsigned)((uintptr_t)tiny_aux_exp_image_end-(uintptr_t)tiny_aux_exp_image);
+    if((uintptr_t)tiny_aux_exp<0x2000u ||
+       (uintptr_t)tiny_aux_exp_gate_end>0x4000u || !n || n>AUX_EXP_RESERVE)
+        die("Aux code placement");
+#endif
     if(rw_last_bank>=15u && rw_next_off>AUX_LUT_BACKUP)
         die("No aux LUT backup space");
     aux_lut_copy(0,AUX_LUT_ADDR,15,AUX_LUT_BACKUP);
     tiny_rw_write(0,AUX_LUT_ADDR,overlay.lut,AUX_LUT_SIZE);
     aux_lut_active=1;
+#if !defined(TINY_PRODOS_HOST_TEST)
+    tiny_rw_write(0,AUX_EXP_ADDR,tiny_aux_exp_image,n);
+#endif
 }
 static void aux_lut_restore(void) {
     if(aux_lut_active){
@@ -1255,6 +1272,11 @@ static const uint32_t exp_lut[1153] = {
 };
 #endif
 static uint32_t exp_neg_q16(uint32_t d) {
+#if defined(TINY_AUX0_LUT) && !defined(TINY_PRODOS_HOST_TEST)
+    if(d>=EXP_LIMIT)return 0;
+    tiny_aux_exp(&d);
+    return d;
+#else
     uint32_t i,f,a,b;
     if(d>=EXP_LIMIT)return 0;
     i=d>>10; f=d&1023u;
@@ -1278,6 +1300,7 @@ static uint32_t exp_neg_q16(uint32_t d) {
     a=exp_lut[i];b=exp_lut[i+1];
 #endif
     return a-(((a-b)*f+512u)>>10);
+#endif
 }
 static void update_hi(const Wide *v,int e,int *hi) {
     Wide m;int b;if(wz(v))return;wmag(&m,v);b=topbit(&m)+e;if(b>*hi)*hi=b;
@@ -1431,7 +1454,7 @@ int main(void) {
 #if !defined(TINY_PRODOS_HOST_TEST)
     __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory"); // HOME
 #endif
-    puts("TINY v0.2 / Stage 12C");
+    puts("TINY v0.2 / Stage 12E");
     puts("Apple //e / LLVM-MOS / RamWorks");
 #ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)
@@ -1456,7 +1479,10 @@ int main(void) {
     srand(1);rw_report=1;load_model("TINY.INT");
 #ifdef TINY_AUX0_LUT
     aux_lut_begin();
-    puts("Aux0 LUT active; quit restores aux0.");
+    if(exp_neg_q16(0)!=EXP_ONE || exp_neg_q16(1024)!=U32(16517109) ||
+       exp_neg_q16(512)!=U32(16647162) || exp_neg_q16(EXP_LIMIT-1)!=0)
+        die("Aux exp self-test");
+    puts("Aux0 exp active; quit restores aux0.");
 #endif
     rw_stats("load");rw_reset_stats();
     puts(":check toggles hash trace; :banks stats; quit exits.");
