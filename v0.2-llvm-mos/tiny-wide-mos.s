@@ -18,13 +18,15 @@ MLA = $0e
 MLB = $0f
 MLIM = $10
 .section .bss,"aw",@nobits
-.Lq: .space 8
+.Lq: .space 9
 .La: .space 8
 .Lb: .space 8
 .Ln: .space 1
 .Lbits: .space 1
 .Lsign: .space 1
 .Lround: .space 1
+.Lpeak: .space 2
+.Lpkargs: .space 6
 .section .text,"ax",@progbits
 .global wa, ws, wneg, wmag, winc, wz, wn, wc, wcs, wl, wr, wbit, topbit, wm
 .global tiny_wdiv, tiny_wrounddiv, tiny_rescale
@@ -411,61 +413,60 @@ wm:
     inc a
     sta .Lmuldifflo+1
     sta .Lmuldiffhi+1
-    ; Don't visit terms whose output index is >= 8.
-    lda #8
+    ; X walks the output index MO..limit-1, so the A byte is at .La+X-MO
+    ; and the product lands at .Lq+X with no index arithmetic.
     sec
+    lda #<.La
     sbc MO
-    cmp MLA
+    sta .Lmula+1
+    lda #>.La
+    sbc #0
+    sta .Lmula+2
+    ; limit = min(8, MO+MLA): do not visit output bytes >= 8.
+    clc
+    lda MO
+    adc MLA
+    cmp #8
     bcc .Lsetlimit
-    lda MLA
+    lda #8
 .Lsetlimit:
     sta MLIM
-    ldy #0
+    ldx MO
 .Lmulinner:
-    lda .La,y
+.Lmula:
+    ldy $ffff,x
     beq .Lnextinner
-    tax
 .Lmulsumlo:
-    lda ql+256,x
+    lda ql+256,y
     sec
 .Lmuldifflo:
-    sbc ql,x
+    sbc ql,y
     sta MP
 .Lmulsumhi:
-    lda qh+256,x
+    lda qh+256,y
 .Lmuldiffhi:
-    sbc qh,x
-    sta MH
-    ; Add the unsigned 16-bit product at byte offset MO+Y.
-    tya
+    sbc qh,y
+    tay
     clc
-    adc MO
-    tax
     lda MP
-    clc
     adc .Lq,x
     sta .Lq,x
-    inx
-    lda MH
-    php
-    cpx #8
-    beq .Ldiscardhigh
-    plp
-    adc .Lq,x
-    sta .Lq,x
+    tya
+    adc .Lq+1,x             ; .Lq+8 is padding for the discarded byte
+    sta .Lq+1,x
     bcc .Lnextinner
+    phx
 .Lpropagate:
     inx
-    cpx #8
-    beq .Lnextinner
-    inc .Lq,x
+    cpx #7
+    bcs .Lpropdone
+    inc .Lq+1,x
     beq .Lpropagate
-    bra .Lnextinner
-.Ldiscardhigh:
-    plp
+.Lpropdone:
+    plx
 .Lnextinner:
-    iny
-    cpy MLIM
+    inx
+    cpx MLIM
     bcc .Lmulinner
 .Lnextouter:
     inc MO
@@ -505,6 +506,202 @@ wm:
     sta .Lq+7
 .Lmulout:
     jmp .Lstoreq
+; Sum of squares of packed mantissas. R = Wide result, P = int16 values,
+; A = count 1..256 (0 means 256). Each square is one 2x2-byte multiply
+; accumulated straight into the result; 256 squares cannot overflow.
+.global tiny_sumsq
+tiny_sumsq:
+    sta .Ln
+    jsr .Lclearq
+.Lsqloop:
+    ldy #1
+    lda (P),y
+    bpl .Lsqpositive
+    sec
+    dey
+    lda #0
+    sbc (P),y
+    sta .La
+    sta .Lb
+    iny
+    lda #0
+    sbc (P),y
+    bra .Lsqhigh
+.Lsqpositive:
+    dey
+    lda (P),y
+    sta .La
+    sta .Lb
+    iny
+    lda (P),y
+.Lsqhigh:
+    sta .La+1
+    sta .Lb+1
+    ldx #1
+    jsr .Lmul_unsigned
+    clc
+    lda P
+    adc #2
+    sta P
+    bcc .Lsqnext
+    inc P+1
+.Lsqnext:
+    dec .Ln
+    bne .Lsqloop
+    jmp .Lstoreq
+; Attention score for one cached position.
+; R = Wide out, P = TinyScoreArgs {int32 dot; uint16 m, csm; uint32 factor; uint8 top}.
+; raw = dot*m*csm; shift = max(0, topbit(|raw|)-29);
+; out = round(raw / 2^shift) * factor, nearest with ties away from zero.
+; Returns shift; args.top = topbit(|out|), or $ff when out is zero.
+; Works on magnitudes with the shared multiply core and applies the sign last.
+.global tiny_att_score
+tiny_att_score:
+    ldy #3
+    lda (P),y
+    sta .Lsign
+    dey
+.Lscload:
+    lda (P),y
+    sta .La,y
+    dey
+    bpl .Lscload
+    bit .Lsign
+    bpl .Lscpositive
+    sec
+    lda #0
+    sbc .La
+    sta .La
+    lda #0
+    sbc .La+1
+    sta .La+1
+    lda #0
+    sbc .La+2
+    sta .La+2
+.Lscpositive:
+    ldy #4
+    lda (P),y
+    sta .Lb
+    iny
+    lda (P),y
+    sta .Lb+1
+    jsr .Lclearq
+    ldy #2
+    ldx #1
+    jsr .Lmul_unsigned
+    ldy #4
+.Lsccopy:
+    lda .Lq,y
+    sta .La,y
+    dey
+    bpl .Lsccopy
+    ldy #6
+    lda (P),y
+    sta .Lb
+    iny
+    lda (P),y
+    sta .Lb+1
+    jsr .Lclearq
+    ldy #4
+    ldx #1
+    jsr .Lmul_unsigned
+    stz .Ln
+    jsr .Lsctop
+    bmi .Lscnoshift         ; raw is zero
+    sec
+    sbc #29
+    bcc .Lscnoshift
+    beq .Lscnoshift
+    sta .Ln
+    ; Shift right by shift-1 (whole bytes, then bits), then once more so
+    ; the carry is the rounding bit. Five bytes hold everything needed.
+    dec a
+    pha
+    and #7
+    sta .Lbits
+    pla
+    lsr a
+    lsr a
+    lsr a
+    tax
+    ldy #0
+.Lscmove:
+    lda .Lq,x
+    sta .La,y
+    inx
+    iny
+    cpy #5
+    bne .Lscmove
+    ldx .Lbits
+    inx
+.Lscbits:
+    lsr .La+4
+    ror .La+3
+    ror .La+2
+    ror .La+1
+    ror .La
+    dex
+    bne .Lscbits
+    bcc .Lscfactor
+    inc .La
+    bne .Lscfactor
+    inc .La+1
+    bne .Lscfactor
+    inc .La+2
+    bne .Lscfactor
+    inc .La+3
+    bra .Lscfactor
+.Lscnoshift:
+    ldy #3
+.Lsckeep:
+    lda .Lq,y
+    sta .La,y
+    dey
+    bpl .Lsckeep
+.Lscfactor:
+    ldy #11
+    ldx #3
+.Lscfload:
+    lda (P),y
+    sta .Lb,x
+    dey
+    dex
+    bpl .Lscfload
+    jsr .Lclearq
+    ldy #3
+    ldx #3
+    jsr .Lmul_unsigned
+    jsr .Lsctop
+    ldy #12
+    sta (P),y
+    jsr .Lsignedout
+    lda .Ln
+    ldx #0
+    rts
+; A = index of the highest set bit of .Lq, or $ff if it is zero.
+.Lsctop:
+    ldx #7
+.Lsctopscan:
+    lda .Lq,x
+    bne .Lsctopfound
+    dex
+    bpl .Lsctopscan
+    lda #$ff
+    rts
+.Lsctopfound:
+    ldy #$ff
+.Lsctopbit:
+    iny
+    lsr a
+    bne .Lsctopbit
+    sty MT
+    txa
+    asl a
+    asl a
+    asl a
+    ora MT
+    rts
+
 ; Matrix rescaling: signed 24-bit dot * unsigned 24-bit scale *
 ; unsigned 15-bit peak, yielding a signed 64-bit result.
 ; R = Wide output, P = little-endian row scale (4 bytes, top byte 0),
@@ -520,6 +717,14 @@ tiny_rescale:
     sta .Lb,y
     dey
     bpl .Lrsload
+    ldy #4
+    lda (B),y
+    sta .Lpeak
+    iny
+    lda (B),y
+    sta .Lpeak+1
+; .La = signed 24-bit dot, .Lb = 24-bit scale, .Lpeak = peak; result to R.
+.Lrscore:
     lda .La+2
     sta .Lsign
     bpl .Lrspositive
@@ -544,17 +749,63 @@ tiny_rescale:
     sta .La,y
     dey
     bpl .Lrscopy
-    ldy #4
-    lda (B),y
+    lda .Lpeak
     sta .Lb
-    iny
-    lda (B),y
+    lda .Lpeak+1
     sta .Lb+1
     jsr .Lclearq
     ldy #5
     ldx #1
     jsr .Lmul_unsigned
     jmp .Lsignedout
+; Rescale a batch of kernel results. R = Wide outputs, P = eight-byte
+; records (three scale bytes and a spare, then the dot as int32),
+; B = uint16 args[2] {count 1..255, peak}.
+.global tiny_rescale_rows
+tiny_rescale_rows:
+    ldy #0
+    lda (B),y
+    sta .Lround
+    ldy #2
+    lda (B),y
+    sta .Lpeak
+    iny
+    lda (B),y
+    sta .Lpeak+1
+.Lrrloop:
+    ldy #2
+.Lrrscale:
+    lda (P),y
+    sta .Lb,y
+    dey
+    bpl .Lrrscale
+    ldy #4
+    lda (P),y
+    sta .La
+    iny
+    lda (P),y
+    sta .La+1
+    iny
+    lda (P),y
+    sta .La+2
+    jsr .Lrscore
+    clc
+    lda $02                 ; R
+    adc #8
+    sta $02
+    bcc .Lrrout
+    inc $03
+.Lrrout:
+    clc
+    lda P
+    adc #8
+    sta P
+    bcc .Lrrnext
+    inc P+1
+.Lrrnext:
+    dec .Lround
+    bne .Lrrloop
+    rts
 ; Unsigned divide. C wrapper checks divisor != 0. Inputs copied before
 ; writes; quotient in q, remainder in a. Rounded entry returns nearest,
 ; ties upward, directly using remainder (no second multiplication).
@@ -811,6 +1062,325 @@ tiny_pack16:
     dex
     bne .Lpkleftloop
     ldx MP
+    rts
+
+; Largest magnitude of count signed Wide values. R = Wide out, P = values,
+; A:X = count (at least 1). Magnitudes compare as unsigned 64-bit numbers.
+.global tiny_wmaxmag
+tiny_wmaxmag:
+    sta .Ln
+    stx .Lbits
+    jsr .Lclearq
+.Lmxloop:
+    ldy #7
+    lda (P),y
+    bmi .Lmxneg
+.Lmxcmp:
+    lda (P),y
+    cmp .Lq,y
+    bcc .Lmxnext
+    bne .Lmxtake
+    dey
+    bpl .Lmxcmp
+    bra .Lmxnext
+.Lmxtake:
+    ldy #7
+.Lmxcopy:
+    lda (P),y
+    sta .Lq,y
+    dey
+    bpl .Lmxcopy
+    bra .Lmxnext
+.Lmxneg:
+    ldy #0
+    ldx #8
+    sec
+.Lmxnegate:
+    lda #0
+    sbc (P),y
+    sta .La,y
+    iny
+    dex
+    bne .Lmxnegate
+    ldy #7
+.Lmxcmp2:
+    lda .La,y
+    cmp .Lq,y
+    bcc .Lmxnext
+    bne .Lmxtake2
+    dey
+    bpl .Lmxcmp2
+    bra .Lmxnext
+.Lmxtake2:
+    ldy #7
+.Lmxcopy2:
+    lda .La,y
+    sta .Lq,y
+    dey
+    bpl .Lmxcopy2
+.Lmxnext:
+    clc
+    lda P
+    adc #8
+    sta P
+    bcc .Lmxcount
+    inc P+1
+.Lmxcount:
+    lda .Ln
+    bne .Lmxdec
+    dec .Lbits
+.Lmxdec:
+    dec .Ln
+    lda .Ln
+    ora .Lbits
+    bne .Lmxloop
+    jmp .Lstoreq
+
+; Pack count Wide values with one shift. R = int16 out, P = Wide values,
+; B = int16 args[2] {count >= 1, shift}; tiny_pack16's preconditions apply.
+.global tiny_pack_rows
+tiny_pack_rows:
+    lda $02                 ; tiny_pack16 reads its input through R
+    ldx $04
+    stx $02
+    sta $04
+    lda $03
+    ldx $05
+    stx $03
+    sta $05
+    ldy #3
+.Lprargs:
+    lda (B),y
+    sta .Lpkargs,y
+    dey
+    bpl .Lprargs
+.Lprloop:
+    lda .Lpkargs+2
+    ldx .Lpkargs+3
+    jsr tiny_pack16
+    ldy #0
+    sta (P),y
+    iny
+    txa
+    sta (P),y
+    clc
+    lda $02
+    adc #8
+    sta $02
+    bcc .Lprout
+    inc $03
+.Lprout:
+    clc
+    lda P
+    adc #2
+    sta P
+    bcc .Lprcount
+    inc P+1
+.Lprcount:
+    lda .Lpkargs
+    bne .Lprdec
+    dec .Lpkargs+1
+.Lprdec:
+    dec .Lpkargs
+    lda .Lpkargs
+    ora .Lpkargs+1
+    bne .Lprloop
+    rts
+
+; Residual sum of two packed vectors at a common exponent.
+; R = Wide out, P = int16 a, B = TinyResidualArgs {const int16_t *b;
+; uint16 count; int8 sa, sb}. out[i] = shift(a[i],sa) + shift(b[i],sb),
+; where a shift of 0..16 is an exact left shift and -1..-16 a right shift
+; rounded to nearest, ties away from zero.
+.global tiny_residual_rows
+rb = $11
+tiny_residual_rows:
+    ldy #5
+.Lrdargs:
+    lda (B),y
+    sta .Lpkargs,y
+    dey
+    bpl .Lrdargs
+    lda .Lpkargs
+    sta rb
+    lda .Lpkargs+1
+    sta rb+1
+.Lrdloop:
+    ldy #0
+    lda (P),y
+    sta MO
+    iny
+    lda (P),y
+    sta MP
+    lda .Lpkargs+4
+    jsr .Lrdalign
+    ldx #3
+.Lrdsave:
+    lda MO,x
+    sta .La,x
+    dex
+    bpl .Lrdsave
+    ldy #0
+    lda (rb),y
+    sta MO
+    iny
+    lda (rb),y
+    sta MP
+    lda .Lpkargs+5
+    jsr .Lrdalign
+    ldy #0
+    clc
+    lda .La
+    adc MO
+    sta (R),y
+    iny
+    lda .La+1
+    adc MP
+    sta (R),y
+    iny
+    lda .La+2
+    adc MA
+    sta (R),y
+    iny
+    lda .La+3
+    adc MB
+    sta (R),y
+    iny
+    ; Fifth byte: the two sign extensions plus the carry; then its sign.
+    php
+    ldx #0
+    lda .La+3
+    bpl .Lrdexta
+    dex
+.Lrdexta:
+    stx MT
+    ldx #0
+    lda MB
+    bpl .Lrdextb
+    dex
+.Lrdextb:
+    txa
+    plp
+    adc MT
+    sta (R),y
+    asl a
+    lda #0
+    sbc #0
+    eor #$ff
+    iny
+    sta (R),y
+    iny
+    sta (R),y
+    iny
+    sta (R),y
+    clc
+    lda $02
+    adc #8
+    sta $02
+    bcc .Lrdn1
+    inc $03
+.Lrdn1:
+    clc
+    lda P
+    adc #2
+    sta P
+    bcc .Lrdn2
+    inc P+1
+.Lrdn2:
+    clc
+    lda rb
+    adc #2
+    sta rb
+    bcc .Lrdn3
+    inc rb+1
+.Lrdn3:
+    lda .Lpkargs+2
+    bne .Lrddec
+    dec .Lpkargs+3
+.Lrddec:
+    dec .Lpkargs+2
+    lda .Lpkargs+2
+    ora .Lpkargs+3
+    beq .Lrddone
+    jmp .Lrdloop
+.Lrddone:
+    rts
+; MO,MP = signed 16-bit value, A = shift -16..16. Result: MO..MB, signed 32-bit.
+.Lrdalign:
+    tax
+    bmi .Lrdright
+    ldy #0
+    lda MP
+    bpl .Lrdlext
+    dey
+.Lrdlext:
+    sty MA
+    sty MB
+.Lrdlbytes:
+    cpx #8
+    bcc .Lrdlbits
+    lda MA
+    sta MB
+    lda MP
+    sta MA
+    lda MO
+    sta MP
+    stz MO
+    txa
+    sbc #8                  ; carry is set
+    tax
+    bra .Lrdlbytes
+.Lrdlbits:
+    cpx #0
+    beq .Lrdret
+.Lrdlbit:
+    asl MO
+    rol MP
+    rol MA
+    rol MB
+    dex
+    bne .Lrdlbit
+.Lrdret:
+    rts
+.Lrdright:
+    eor #$ff
+    inc a
+    tax                     ; 1..16 right shifts of the magnitude
+    lda MP
+    sta MT                  ; sign
+    bpl .Lrdrmag
+    sec
+    lda #0
+    sbc MO
+    sta MO
+    lda #0
+    sbc MP
+    sta MP
+.Lrdrmag:
+    lsr MP
+    ror MO
+    dex
+    bne .Lrdrmag
+    bcc .Lrdrsign
+    inc MO
+    bne .Lrdrsign
+    inc MP
+.Lrdrsign:
+    stz MA
+    stz MB
+    bit MT
+    bpl .Lrdret
+    sec
+    lda #0
+    sbc MO
+    sta MO
+    lda #0
+    sbc MP
+    sta MP
+    lda #0
+    sbc #0
+    sta MA
+    sta MB
     rts
 
 ; Attention value coefficient: round(127*a/b), 0 <= a <= b <= 2^41.
