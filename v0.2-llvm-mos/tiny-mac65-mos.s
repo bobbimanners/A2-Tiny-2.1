@@ -8,6 +8,7 @@
 ;       caller guarantees <= 128 terms per slot, n <= 128.
 .global tiny_mac65_dot, tiny_mac65_axpy
 .global tiny_mac65_prepare, tiny_mac65_prepared_dot
+.global tiny_mac65_aux_dot, tiny_mac65_aux_end
 
 ; Private zero page, reserved by -mreserve-zp=6.
 .section .zp.bss,"aw",@nobits
@@ -294,6 +295,9 @@ tiny_mac65_prepare:
     rts
 
 tiny_mac65_prepared_dot:
+    jsr .Lprepared_body
+    jmp .Ltiny_mac65_dot_done
+.Lprepared_body:
     cld
     stz $0e
     stz $0f
@@ -338,5 +342,66 @@ tiny_mac65_prepared_dot:
 .Lprepared_limit:
     cpy #0
     bne .Lprepared_loop
-    ; Shared 11K bias correction and result sign extension.
-    jmp .Ltiny_mac65_dot_done
+    rts
+
+; Direct matrix row: tiny_mac_a = aux record address (scale then weights),
+; tiny_mac_b = main destination of 4-byte scale, tiny_mac_coeff = bank.
+; Prepare the vector first in tiny_mac65_work. All code and the tables
+; and prepared vector must reside in protected main HGR. Main ZP/stack,
+; RAMRD/RAMWRT main and bank 0 at entry. Restore mapping before result
+; correction accesses C globals. No C calls while aux reads enabled.
+tiny_mac65_aux_dot:
+    php
+    sei
+    cld
+    lda $C01C
+    pha
+    lda $C01D
+    pha
+    lda $C018
+    pha
+    sta $C054
+    sta $C057
+    sta $C001
+    lda tiny_mac_a
+    sta ap
+    clc
+    adc #4
+    sta .Lprepared_weight+1
+    lda tiny_mac_a+1
+    sta ap+1
+    adc #0
+    sta .Lprepared_weight+2
+    lda tiny_mac_b
+    sta bp
+    lda tiny_mac_b+1
+    sta bp+1
+    lda tiny_mac_coeff
+    sta $C073
+    sta $C003
+    ldy #3
+.Laux_scale:
+    lda (ap),y
+    sta (bp),y
+    dey
+    bpl .Laux_scale
+    jsr .Lprepared_body
+    sta $C002
+    stz $C073
+    pla
+    bmi .Laux_storeok
+    sta $C000
+.Laux_storeok:
+    pla
+    bmi .Laux_hiresok
+    sta $C056
+.Laux_hiresok:
+    pla
+    bpl .Laux_pageok
+    sta $C055
+.Laux_pageok:
+    jsr .Ltiny_mac65_dot_done
+    plp
+    rts
+tiny_mac65_aux_end:
+

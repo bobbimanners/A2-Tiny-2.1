@@ -103,7 +103,15 @@ typedef struct { Table q,k,v,o,f1,f2; BankGain g1,g2;
 static Table emb,pos;
 static Layer layers[MAXL];
 static BankGain gf;
+#if defined(TINY_MOS) && !defined(TINY_PRODOS_HOST_TEST)
+/* Standard model has HD=24; shrink per-head accumulators below so the
+ * top 512 bytes of the existing reserved scratch arena can hold gains
+ * and the mutually exclusive row staging buffer. */
+typedef char gain_fits_scratch[(sizeof(Gain)<=0x200u)?1:-1];
+#define gain_work (*(Gain *)(uintptr_t)0x1e00u)
+#else
 static Gain gain_work;
+#endif
 static int D,L,H,HD,HID, creativity=0, profiling=0;
 static uint32_t att_factor; /* 2^44 / (127^2 * sqrt(HD)) */
 /* These lifetimes do not overlap: logits are consumed before the next
@@ -239,7 +247,14 @@ static void put16(uint8_t *b,unsigned v){b[0]=(uint8_t)v;b[1]=(uint8_t)(v>>8);}
 #else
 #define ROWBUF_SIZE (4 * MAXD)
 #endif
+#ifdef TINY_MOS
+/* Row transfers and normalization never need the gain vector concurrently.
+ * Access through uint8_t is legal; the native target is little-endian. */
+typedef char rowbuf_fits_gain[(ROWBUF_SIZE <= sizeof(gain_work.v)) ? 1 : -1];
+#define rowbuf ((uint8_t *)gain_work.v)
+#else
 static uint8_t rowbuf[ROWBUF_SIZE];
+#endif
 static void read_exact(ModelFile *f,void *p,size_t n) { if(model_read(f,p,n)!=n) die("truncated model"); }
 static unsigned read16(ModelFile *f) { unsigned char b[2]; read_exact(f,b,2); return b[0]+256u*b[1]; }
 static uint32_t read32(ModelFile *f) {
@@ -272,8 +287,10 @@ static void gains(ModelFile *f,BankGain *g) {
     rw_write(&g->data,0,0,rowbuf,4u*(unsigned)D);
 }
 static void fetch_gain(const BankGain *g) {
-    int i;gain_work.exp=g->exp;rw_read(&g->data,0,0,rowbuf,4u*(unsigned)D);
-    for(i=0;i<D;i++)gain_work.v[i]=signed32(get32(rowbuf+4*i));
+    gain_work.exp=g->exp;rw_read(&g->data,0,0,rowbuf,4u*(unsigned)D);
+#ifndef TINY_MOS
+    {int i;for(i=0;i<D;i++)gain_work.v[i]=signed32(get32(rowbuf+4*i));}
+#endif
 }
 static void load_model(const char *path) {
     ModelFile *f=model_open(path);char magic[4];int l;
@@ -526,15 +543,21 @@ typedef struct {
         int8_t matvec_q[MAXHID];
 #endif
     } projection;
+#ifdef TINY_MOS
+    /* Native load_model enforces D=96,H=4, hence HD=24. */
+    int32_t attention_accum[24];
+#else
     int32_t attention_accum[MAXD];
+#endif
     int attention_exps[CTX], attention_out_exp[MAXD];
     int8_t attention_aq[MAXD], attention_av[CTX];
 } Scratch;
 #if defined(TINY_MOS) && !defined(TINY_PRODOS_HOST_TEST)
 /* SYS file begins at $2000. The model reader uses $0800-$0FFF.
  * Scratch is explicitly assigned $1000-$1FFF, separate from CRT BSS.
+ * $1000-$1DFF is Scratch; $1E00-$1FFF holds Gain/rowbuf.
  * Nothing relies on zero initialization of this arena. */
-typedef char scratch_must_fit[(sizeof(Scratch) <= 0x1000u) ? 1 : -1];
+typedef char scratch_must_fit[(sizeof(Scratch) <= 0x0e00u) ? 1 : -1];
 #define scratch (*(Scratch *)(uintptr_t)0x1000u)
 static void reserve_scratch(void) {
     volatile uint8_t *bitmap = (volatile uint8_t *)(uintptr_t)0xbf5au;
@@ -619,6 +642,12 @@ extern void tiny_mac65_axpy(void);
 #ifdef TINY_MOS
 extern void tiny_mac65_prepare(void);
 extern void tiny_mac65_prepared_dot(void);
+extern void tiny_mac65_aux_dot(void);
+extern const uint8_t tiny_mac65_aux_end[], ql[];
+extern int8_t tiny_mac65_work[512];
+#if !defined(TINY_COPY_MAC)
+#define TINY_DIRECT_MAC
+#endif
 #endif
 static int32_t dot8_chunk(const int8_t *a,const int8_t *b,int n) {
     tiny_mac_a=a; tiny_mac_b=b; tiny_mac_n=(uint16_t)n;
@@ -742,7 +771,11 @@ static void axpy8(int32_t *accum,int8_t c,const int8_t *v,int n) {
 }
 #endif
 static void matvec(const Table *t,const Vec *src,Vec *dst) {
+#ifdef TINY_DIRECT_MAC
+    int8_t *q=tiny_mac65_work;
+#else
     int8_t *q=scratch.projection.matvec_q;
+#endif
     /* Absorb the matrix rescaling divisor (128) into the exponent. */
     int r,m=q8(src->v,q,t->cols);int e=src->exp+t->exp-7;
     unsigned bank=t->data.bank,off=t->data.off,n=t->data.stride;
@@ -760,20 +793,32 @@ static void matvec(const Table *t,const Vec *src,Vec *dst) {
     tiny_mac_b=q;
     tiny_mac_n=(uint16_t)t->cols;
     tiny_mac65_prepare();
+#ifdef TINY_DIRECT_MAC
+    tiny_mac_b=(const int8_t *)rowbuf; /* four scale bytes only */
+#endif
 #endif
     /* rw_alloc packs complete records consecutively, skipping only the
      * unusable tail of a bank. Walk that layout without mul/div per row. */
     for(r=0;r<t->rows;r++){
         if(off>last){++bank;off=RW_LO;}
+#ifdef TINY_DIRECT_MAC
+        tiny_mac_a=(const int8_t *)(uintptr_t)off;
+        tiny_mac_coeff=(int8_t)bank;
+        tiny_mac65_aux_dot();
+        /* Count logical reads, not bytes copied into main memory. */
+        rw_select(bank);++rw_reads;rw_read_bytes+=n;
+#else
         rw_read_at(bank,off,rowbuf,n);
+#ifdef TINY_MOS
+        tiny_mac65_prepared_dot();
+#endif
+#endif
         off+=n;
 #if defined(TINY_MOS) && defined(TINY_WIDE_ASM)
-        tiny_mac65_prepared_dot();
         args.dot=tiny_mac_result;
         tiny_rescale(&wide[r],rowbuf,&args);
 #else
 #ifdef TINY_MOS
-        tiny_mac65_prepared_dot();
         wi(&a,tiny_mac_result);
 #else
         wi(&a,dot8((const int8_t *)(rowbuf+4),q,t->cols));
@@ -1391,11 +1436,18 @@ int main(void) {
 #if !defined(TINY_PRODOS_HOST_TEST)
     __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory"); // HOME
 #endif
-    puts("TINY v0.2 / Stage 11Q");
+    puts("TINY v0.2 / Stage 12A");
     puts("Apple //e / LLVM-MOS / RamWorks");
 #ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)
     reserve_scratch();
+#ifdef TINY_DIRECT_MAC
+    if((uintptr_t)tiny_mac65_dot<0x2000u ||
+       (uintptr_t)tiny_mac65_aux_end>0x4000u ||
+       (uintptr_t)ql<0x2000u ||
+       (uintptr_t)tiny_mac65_work+512u>0x4000u)
+        die("MAC outside HGR page");
+#endif
 #endif
 #endif
     puts("Banks 1-15 reserved for TINY.");

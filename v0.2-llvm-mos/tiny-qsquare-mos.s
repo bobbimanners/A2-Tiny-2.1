@@ -1,5 +1,5 @@
 ; Shared quarter-square table, unchanged from Stage 11A.
-.section .rodata,"a",@progbits
+.section .text,"ax",@progbits
 ; Q[i] = floor((i-256)^2/4). Separate byte planes.
 ; Align both planes and their +256 halves for constant 4-cycle table loads.
 .p2align 8
@@ -70,3 +70,8 @@ qh:
     .byte $2a,$2a,$2b,$2b,$2b,$2c,$2c,$2d,$2d,$2d,$2e,$2e,$2f,$2f,$30,$30
     .byte $31,$31,$31,$32,$32,$33,$33,$34,$34,$35,$35,$35,$36,$36,$37,$37
     .byte $38,$38,$39,$39,$3a,$3a,$3b,$3b,$3c,$3c,$3d,$3d,$3e,$3e,$3f,$3f
+
+; Protected writable activation planes, adjacent to the tables.
+.global tiny_mac65_work
+tiny_mac65_work:
+    .space 512
