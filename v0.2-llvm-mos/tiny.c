@@ -1246,15 +1246,22 @@ static void update_hi(const Wide *v,int e,int *hi) {
 static uint32_t delta_q16(const Wide *m,int e,unsigned mul,unsigned div) {
     Wide a,b,v,limit;int shift=e+16;
     if(wz(m))return 0;
-    wmu(&a,m,mul);wu(&limit,EXP_LIMIT*(uint32_t)div);
+    if(mul==1)a=*m;else wmu(&a,m,mul);
+    wu(&limit,EXP_LIMIT*(uint32_t)div);
     if(shift>=0){
         wr(&v,&limit,shift);if(shift>=63||wc(&a,&v)>0)return EXP_LIMIT;
-        wl(&v,&a,shift);wu(&b,div);
+        wl(&v,&a,shift);
+        if(div==1)return WLO(v); /* already clipped to EXP_LIMIT */
+        wu(&b,div);
     }else{
         if(shift<=-60)return 0;
-        v=a;wu(&b,div);wl(&b,&b,-shift);
+        if(div==1){ /* exact unsigned round-to-nearest power-of-two division */
+            wr(&v,&a,-shift);if(wbit(&a,-shift-1))winc(&v);
+        }else{
+            v=a;wu(&b,div);wl(&b,&b,-shift);
+        }
     }
-    wrounddiv(&v,&v,&b);
+    if(div!=1)wrounddiv(&v,&v,&b);
     return WHI(v)||WLO(v)>=EXP_LIMIT?EXP_LIMIT:WLO(v);
 }
 static void attention(Layer *a,int p,const Vec *q,Vec *dst) {
@@ -1384,7 +1391,7 @@ int main(void) {
 #if !defined(TINY_PRODOS_HOST_TEST)
     __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory"); // HOME
 #endif
-    puts("TINY v0.2 / Stage 11O");
+    puts("TINY v0.2 / Stage 11P");
     puts("Apple //e / LLVM-MOS / RamWorks");
 #ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)

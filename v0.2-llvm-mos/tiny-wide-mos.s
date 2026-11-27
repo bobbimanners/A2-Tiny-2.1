@@ -1,4 +1,4 @@
-; Stage 11I: LLVM-MOS Apple II 65C02 wide arithmetic.
+; Stage 11P: LLVM-MOS Apple II 65C02 wide arithmetic.
 ; ABI: pointer args in rc2/3, rc4/5, rc6/7; int args/returns A:X.
 ; Apple2 maps rc0..31 to $00..$1f. No callee-saved registers touched.
 ; D must be clear (normal C environment). No IRQ/reentrant use.
@@ -596,16 +596,27 @@ tiny_wrounddiv:
     sta .La,y
     dey
     bpl .Ldivload
-    lda .Lb+1
-    ora .Lb+2
-    ora .Lb+3
-    ora .Lb+4
+    lda .Lb+4
     ora .Lb+5
     ora .Lb+6
     ora .Lb+7
-    bne .Ldivgeneral
+    beq .Ldivnarrow
+    jmp .Ldivgeneral
+.Ldivnarrow:
+    lda .Lb+1
+    ora .Lb+2
+    ora .Lb+3
+    beq .Ldiv8start
+    jmp .Ldiv32
+.Ldiv8start:
     ; Fast one-byte divisor (e.g. 127): A holds running remainder.
     ldx #7
+.Ldiv8scan:
+    lda .Lq,x
+    bne .Ldiv8ready
+    dex
+    bne .Ldiv8scan
+.Ldiv8ready:
     lda #0
 .Ldiv8byte:
     ldy #8
@@ -1033,3 +1044,81 @@ tiny_q8_vector:
     jmp .Lq8loop
 .Lq8done:
     rts
+
+; Unsigned 64/32 division, 2..4 significant divisor bytes. Process the
+; dividend one byte at a time, overwriting that byte with quotient bits.
+; Remainder in caller-saved ZP MO..MB, divisor in MH..MLB. The carry out
+; of the 32-bit remainder shift represents its implicit 33rd bit.
+; All input bytes have already been copied, and La was zeroed by caller.
+.Ldiv32:
+    lda .Lb
+    sta MH
+    lda .Lb+1
+    sta MT
+    lda .Lb+2
+    sta MLA
+    lda .Lb+3
+    sta MLB
+    stz MO
+    stz MP
+    stz MA
+    stz MB
+    ldx #7
+.Ld32scan:
+    lda .Lq,x
+    bne .Ld32byte
+    dex
+    bne .Ld32scan
+.Ld32byte:
+    ldy #8
+.Ld32bit:
+    asl .Lq,x
+    rol MO
+    rol MP
+    rol MA
+    rol MB
+    bcs .Ld32sub
+    lda MB
+    cmp MLB
+    bcc .Ld32next
+    bne .Ld32sub
+    lda MA
+    cmp MLA
+    bcc .Ld32next
+    bne .Ld32sub
+    lda MP
+    cmp MT
+    bcc .Ld32next
+    bne .Ld32sub
+    lda MO
+    cmp MH
+    bcc .Ld32next
+.Ld32sub:
+    sec
+    lda MO
+    sbc MH
+    sta MO
+    lda MP
+    sbc MT
+    sta MP
+    lda MA
+    sbc MLA
+    sta MA
+    lda MB
+    sbc MLB
+    sta MB
+    inc .Lq,x
+.Ld32next:
+    dey
+    bne .Ld32bit
+    dex
+    bpl .Ld32byte
+    lda MO
+    sta .La
+    lda MP
+    sta .La+1
+    lda MA
+    sta .La+2
+    lda MB
+    sta .La+3
+    jmp .Ldivfinish
