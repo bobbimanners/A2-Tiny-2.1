@@ -512,7 +512,10 @@ typedef struct {
         Wide attention_scores[CTX];
         uint32_t pick_weights[VOCAB];
     } phase;
-    Wide attention_result[MAXD];
+    union {
+        Wide attention_result[MAXD];
+        int8_t matvec_q[MAXHID];
+    } projection;
     int32_t attention_accum[MAXD];
     int attention_exps[CTX], attention_out_exp[MAXD];
     int8_t attention_aq[MAXD], attention_av[CTX];
@@ -695,7 +698,8 @@ static void axpy8(int32_t *accum,int8_t c,const int8_t *v,int n) {
 }
 #endif
 static void matvec(const Table *t,const Vec *src,Vec *dst) {
-    static int8_t q[MAXHID];int r,m=q8(src->v,q,t->cols);int e=src->exp+t->exp;Wide a;
+    int8_t *q=scratch.projection.matvec_q;
+    int r,m=q8(src->v,q,t->cols);int e=src->exp+t->exp;Wide a;
     for(r=0;r<t->rows;r++){
         rw_read(&t->data,r,0,rowbuf,(unsigned)t->cols+4u);
         wi(&a,dot8((const int8_t *)(rowbuf+4),q,t->cols));wmi(&a,&a,signed32(get32(rowbuf)));wmu(&a,&a,(uint32_t)m);rdiv(&wide[r],&a,127);
@@ -1206,11 +1210,11 @@ static void attention(Layer *a,int p,const Vec *q,Vec *dst) {
         for(j=0;j<=p;j++)if(scratch.attention_av[j]){cache_head(&a->value,j,h);axpy8(scratch.attention_accum,scratch.attention_av[j],(const int8_t *)rowbuf,HD);}
         wu(&den,sum);wmu(&den,&den,16129);wl(&t,&big,22);wrounddiv(&scale,&t,&den);he=e-22;
         for(i=0;i<HD;i++){
-            wi(&s,scratch.attention_accum[i]);wm(&s,&s,&scale);scratch.attention_result[h*HD+i]=s;scratch.attention_out_exp[h*HD+i]=he;update_hi(&s,he,&out_hi);
+            wi(&s,scratch.attention_accum[i]);wm(&s,&s,&scale);scratch.projection.attention_result[h*HD+i]=s;scratch.attention_out_exp[h*HD+i]=he;update_hi(&s,he,&out_hi);
         }
     }
     e=out_hi==INT_MIN?0:out_hi-45;
-    for(i=0;i<D;i++)align(&wide[i],&scratch.attention_result[i],scratch.attention_out_exp[i],e);
+    for(i=0;i<D;i++)align(&wide[i],&scratch.projection.attention_result[i],scratch.attention_out_exp[i],e);
     pack(dst,wide,D,e);
 }
 static void step(int tok,int p,Vec *out) {
@@ -1293,16 +1297,15 @@ int main(void) {
 #ifndef TINY_MOS
     int c;
 #endif
-#ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)
-    __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory");
+    __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory"); // HOME
 #endif
-    puts("TINY 10D / LLVM-MOS / RamWorks");
+    puts("TINY v0.2 / Stage 11B");
+    puts("Apple //e / LLVM-MOS / RamWorks");
+#ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)
     reserve_scratch();
 #endif
-#else
-    puts("TINY 8B / Apple //e / RamWorks");
 #endif
     puts("Banks 1-12 reserved for TINY.");
     bad=tiny_rw_probe();if(bad){

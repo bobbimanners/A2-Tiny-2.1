@@ -1,4 +1,4 @@
-; Stage 10C: LLVM-MOS Apple II 65C02 wide arithmetic.
+; Stage 11B: LLVM-MOS Apple II 65C02 wide arithmetic.
 ; ABI: pointer args in rc2/3, rc4/5, rc6/7; int args/returns A:X.
 ; Apple2 maps rc0..31 to $00..$1f. No callee-saved registers touched.
 ; D must be clear (normal C environment). No IRQ/reentrant use.
@@ -6,15 +6,23 @@
 R = $02
 P = $04
 B = $06
+; Private wm temporaries, in caller-saved imaginary registers.
+; R/P/B ($02..$07) are preserved until .Lstoreq.
+MO = $08
+MP = $09
+MA = $0a
+MB = $0b
+MH = $0c
+MT = $0d
+MLA = $0e
+MLB = $0f
+MLIM = $10
 .section .bss,"aw",@nobits
 .Lq: .space 8
 .La: .space 8
 .Lb: .space 8
 .Ln: .space 1
 .Lbits: .space 1
-.Louter: .space 1
-.Linner: .space 1
-.Lprod: .space 1
 .Lsign: .space 1
 .Lround: .space 1
 .section .text,"ax",@progbits
@@ -296,7 +304,8 @@ wr:
     rts
 ; Modulo 2^64 schoolbook multiplication. Magnitudes avoid eight $ff
 ; bytes for small signed negative inputs. Zero bytes skipped; truncate
-; products beyond byte 7. 8x8 uses compact shift/rotate multiplication.
+; products beyond byte 7. Use the shared MAC quarter-square planes
+; for exact unsigned byte products; skip leading zero bytes once.
 wm:
     jsr .Lloadab
     jsr .Lclearq
@@ -359,46 +368,99 @@ wm:
     sbc .Lb+7
     sta .Lb+7
 .Lbpos:
-    stz .Louter
-.Lmulouter:
-    ldx .Louter
-    lda .Lb,x
-    beq .Lnextouter
-    stz .Linner
-.Lmulinner:
-    ldx .Linner
-    lda .La,x
-    beq .Lnextinner
-    ldx .Louter
-    lda .Lb,x
-    sta .Lprod
-    ldx .Linner
-    ldy #8
-    lda #0
-    lsr .Lprod
-.Lmul8:
-    bcc .Lmulnoadd
-    clc
-    adc .La,x
-.Lmulnoadd:
-    ror a
-    ror .Lprod
+    ; Find significant byte counts (1..8); zero operands return zero.
+    ldy #7
+.LscanA:
+    lda .La,y
+    bne .LfoundA
     dey
-    bne .Lmul8
-    pha
-    txa
+    bpl .LscanA
+    jmp .Lstoreq
+.LfoundA:
+    iny
+    sty MLA
+    ldy #7
+.LscanB:
+    lda .Lb,y
+    bne .LfoundB
+    dey
+    bpl .LscanB
+    jmp .Lstoreq
+.LfoundB:
+    iny
+    sty MLB
+    stz MO
+.Lmulouter:
+    ldx MO
+    lda .Lb,x
+    bne .Louter_nonzero
+    jmp .Lnextouter
+.Louter_nonzero:
+    sta MB
+    ; Don't visit terms whose output index is >= 8.
+    lda #8
+    sec
+    sbc MO
+    cmp MLA
+    bcc .Lsetlimit
+    lda MLA
+.Lsetlimit:
+    sta MLIM
+    ldy #0
+.Lmulinner:
+    lda .La,y
+    beq .Lnextinner
+    sta MA
+    ; Q[256+t] = floor(t*t/4), for 0 <= t <= 255.
+    ; s = a+b, t=s mod 256. For s>=256 add 128*t+16384.
     clc
-    adc .Louter
+    adc MB
     tax
-    lda .Lprod
+    bcs .Lsumcarry
+    lda ql+256,x
+    sta MP
+    lda qh+256,x
+    bra .Lsumdone
+.Lsumcarry:
+    txa
+    lsr a
+    sta MT
+    lda #0
+    ror a               ; low byte of 128*t; carry now clear
+    adc ql+256,x
+    sta MP
+    lda qh+256,x
+    adc MT              ; high byte, including low-byte carry
+    adc #64             ; previous ADC cannot overflow (<=191)
+.Lsumdone:
+    sta MH
+    ; Subtract floor(abs(a-b)^2/4). Both squares have same parity.
+    lda MA
+    sec
+    sbc MB
+    bcs .Ldiffpos
+    eor #$ff
+    inc a
+.Ldiffpos:
+    tax
+    lda MP
+    sec
+    sbc ql+256,x
+    sta MP
+    lda MH
+    sbc qh+256,x
+    sta MH
+    ; Add the unsigned 16-bit product at byte offset MO+Y.
+    tya
+    clc
+    adc MO
+    tax
+    lda MP
     clc
     adc .Lq,x
     sta .Lq,x
     inx
-    pla
-    ; Need retain carry across bounds check: use Y (remaining count).
-    ; X==8 means high byte is outside result; compare via TXA would
-    ; destroy A, CPX would destroy carry. Save carry with PHP/PLP.
+    lda MH
     php
     cpx #8
     beq .Ldiscardhigh
@@ -416,16 +478,13 @@ wm:
 .Ldiscardhigh:
     plp
 .Lnextinner:
-    inc .Linner
-    lda .Linner
-    clc
-    adc .Louter
-    cmp #8
+    iny
+    cpy MLIM
     bcc .Lmulinner
 .Lnextouter:
-    inc .Louter
-    lda .Louter
-    cmp #8
+    inc MO
+    lda MO
+    cmp MLB
     bcs .Lmulend
     jmp .Lmulouter
 .Lmulend:
