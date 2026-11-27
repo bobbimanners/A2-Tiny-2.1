@@ -927,3 +927,109 @@ tiny_attention_coeff:
     bpl .Laccmploop
 .Lacret:
     rts
+
+; Stage 11N: quantize a packed vector to signed bytes, exactly as q8.
+; R = int16 input, P = int8 output, B = uint16 args[2] {n,peak}.
+; 1 <= n <= 256, 1 <= peak <= 32767, abs(input[i]) <= peak.
+; Zero encoded count means 256. Source and destination do not overlap.
+; Compute seven fractional quotient bits, then subtract the original
+; magnitude to turn 128*a into 127*a. Round ties away from zero.
+; Two-byte remainder suffices (2*peak <= 65534). No extra ZP or BSS.
+.global tiny_q8_vector
+tiny_q8_vector:
+    ldy #0
+    lda (B),y
+    sta MT              ; remaining count, modulo 256
+    ldy #2
+    lda (B),y
+    sta MLB             ; denominator low
+    iny
+    lda (B),y
+    sta MLIM            ; denominator high
+.Lq8loop:
+    ldy #0
+    lda (R),y
+    sta MO
+    iny
+    lda (R),y
+    sta MH              ; sign
+    sta MP
+    bpl .Lq8mag
+    sec
+    lda #0
+    sbc MO
+    sta MO
+    lda #0
+    sbc MP
+    sta MP
+.Lq8mag:
+    lda MO
+    sta MA
+    lda MP
+    sta MB
+    lda #2              ; sentinel: shifts out after seven quotient bits
+    sta MLA
+.Lq8div:
+    asl MA
+    rol MB
+    sec
+    lda MA
+    sbc MLB
+    tay
+    lda MB
+    sbc MLIM
+    bcc .Lq8bit
+    sty MA
+    sta MB
+.Lq8bit:
+    rol MLA             ; quotient bit from subtract; carry = sentinel
+    bcc .Lq8div
+    sec
+    lda MA
+    sbc MO
+    sta MA
+    lda MB
+    sbc MP
+    sta MB
+    bcs .Lq8round
+    dec MLA
+    clc
+    lda MA
+    adc MLB
+    sta MA
+    lda MB
+    adc MLIM
+    sta MB
+.Lq8round:
+    asl MA
+    rol MB
+    sec
+    lda MA
+    sbc MLB
+    lda MB
+    sbc MLIM
+    lda MLA
+    adc #0
+    bit MH
+    bpl .Lq8store
+    eor #$ff
+    inc a
+.Lq8store:
+    ldy #0
+    sta (P),y
+    clc
+    lda R
+    adc #2
+    sta R
+    bcc .Lq8srcok
+    inc R+1
+.Lq8srcok:
+    inc P
+    bne .Lq8dstok
+    inc P+1
+.Lq8dstok:
+    dec MT
+    beq .Lq8done
+    jmp .Lq8loop
+.Lq8done:
+    rts

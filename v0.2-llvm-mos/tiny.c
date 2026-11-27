@@ -586,9 +586,18 @@ static void pack(Vec *dst,const Wide *src,int n,int exp) {
 }
 static int peak16(const int16_t *v,int n) {int i;int32_t m=0,a;for(i=0;i<n;i++){a=v[i];if(a<0)a=-a;if(a>m)m=a;}if(m>32767L)die("invalid packed vector");return (int)m;}
 static int q8(const int16_t *v,int8_t *out,int n) {
-    int i,m=peak16(v,n);int32_t a;
+    int m=peak16(v,n);
     if(!m){memset(out,0,(size_t)n);return 0;}
+#if defined(TINY_MOS) && defined(TINY_WIDE_ASM)
+    /* Native dimensions are bounded by MAXHID=256. A nonzero peak
+     * implies n>0. The packed-vector peak bounds every magnitude. */
+    uint16_t args[2];
+    args[0]=(uint16_t)n;args[1]=(uint16_t)m;
+    tiny_q8_vector(v,out,args);
+#else
+    int i;int32_t a;
     for(i=0;i<n;i++){a=(int32_t)v[i]*127L;out[i]=(int8_t)(a<0?-((-a+m/2)/m):(a+m/2)/m);}
+#endif
     return m;
 }
 /* Assembly interface uses globals to avoid depending on cc65 fastcall ABI.
@@ -1345,7 +1354,7 @@ int main(void) {
 #if !defined(TINY_PRODOS_HOST_TEST)
     __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory"); // HOME
 #endif
-    puts("TINY v0.2 / Stage 11L");
+    puts("TINY v0.2 / Stage 11N");
     puts("Apple //e / LLVM-MOS / RamWorks");
 #ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)
