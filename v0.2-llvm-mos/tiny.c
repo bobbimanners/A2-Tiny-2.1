@@ -1231,7 +1231,11 @@ static void attention(Layer *a,int p,const Vec *q,Vec *dst) {
         e=hi==INT_MIN?0:hi-40;wu(&big,0);
         for(j=0;j<=p;j++){align(&scratch.phase.attention_scores[j],&scratch.phase.attention_scores[j],scratch.attention_exps[j],e);if(wc(&scratch.phase.attention_scores[j],&big)>0)big=scratch.phase.attention_scores[j];}
         for(j=0;j<=p;j++){
+#if defined(TINY_MOS) && defined(TINY_WIDE_ASM)
+            scratch.attention_av[j]=(int8_t)tiny_attention_coeff(&scratch.phase.attention_scores[j],&big);
+#else
             if(wz(&big))scratch.attention_av[j]=0;else{wmu(&t,&scratch.phase.attention_scores[j],127);wrounddiv(&t,&t,&big);scratch.attention_av[j]=(int8_t)WLO(t);}
+#endif
         }
         for(i=0;i<HD;i++)scratch.attention_accum[i]=0;
         for(j=0;j<=p;j++)if(scratch.attention_av[j]){cache_head(&a->value,j,h);axpy8(scratch.attention_accum,scratch.attention_av[j],(const int8_t *)rowbuf,HD);}
@@ -1327,7 +1331,7 @@ int main(void) {
 #if !defined(TINY_PRODOS_HOST_TEST)
     __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory"); // HOME
 #endif
-    puts("TINY v0.2 / Stage 11H");
+    puts("TINY v0.2 / Stage 11I");
     puts("Apple //e / LLVM-MOS / RamWorks");
 #ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)

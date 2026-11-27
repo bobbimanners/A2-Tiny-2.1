@@ -1,4 +1,4 @@
-; Stage 11H: LLVM-MOS Apple II 65C02 wide arithmetic.
+; Stage 11I: LLVM-MOS Apple II 65C02 wide arithmetic.
 ; ABI: pointer args in rc2/3, rc4/5, rc6/7; int args/returns A:X.
 ; Apple2 maps rc0..31 to $00..$1f. No callee-saved registers touched.
 ; D must be clear (normal C environment). No IRQ/reentrant use.
@@ -821,4 +821,109 @@ tiny_pack16:
     dex
     bne .Lpkleftloop
     ldx MP
+    rts
+
+; Attention value coefficient: round(127*a/b), 0 <= a <= b <= 2^41.
+; R = a, P = b. Return 0 if b=0 (as in the original C loop).
+; Seven fractional division steps compute 128*a = q*b + rem.
+; Subtract a from rem, borrowing one quotient unit if needed, then
+; round by comparing 2*rem with b. For a=b the seven steps produce
+; q=127, rem=b; the correction gives rem=0, so no special case.
+; Six-byte remainder in caller-saved $08..$0d; denominator in Lb.
+; No new BSS, no extra reserved zero page; inputs are untouched.
+.global tiny_attention_coeff
+tiny_attention_coeff:
+    ldy #5
+    ldx #5
+    lda #0
+    sta MLA
+.Lacload:
+    lda (R),y
+    sta MO,x
+    lda (P),y
+    sta .Lb,y
+    ora MLA
+    sta MLA
+    dex
+    dey
+    bpl .Lacload
+    lda MLA
+    beq .Laczero
+    stz MLA
+    lda #7
+    sta MLB
+.Lacloop:
+    jsr .Lacdouble
+    asl MLA
+    jsr .Laccmp
+    bcc .Lacnext
+    ldx #0
+    ldy #6
+    sec
+.Lacsub:
+    lda MO,x
+    sbc .Lb,x
+    sta MO,x
+    inx
+    dey
+    bne .Lacsub
+    inc MLA
+.Lacnext:
+    dec MLB
+    bne .Lacloop
+    ; Subtract a to change 128*a to 127*a.
+    lda #6
+    sta MLB
+    ldx #0
+    ldy #0
+    sec
+.Lacadjust:
+    lda MO,x
+    sbc (R),y
+    sta MO,x
+    inx
+    iny
+    dec MLB
+    bne .Lacadjust
+    bcs .Lacround
+    dec MLA
+    ldx #0
+    ldy #6
+    clc
+.Lacborrow:
+    lda MO,x
+    adc .Lb,x
+    sta MO,x
+    inx
+    dey
+    bne .Lacborrow
+.Lacround:
+    jsr .Lacdouble
+    jsr .Laccmp
+    lda MLA
+    adc #0              ; carry from compare: round half up
+    ldx #0
+    rts
+.Laczero:
+    lda #0
+    tax
+    rts
+.Lacdouble:
+    asl MO
+    rol MP
+    rol MA
+    rol MB
+    rol MH
+    rol MT
+    rts
+.Laccmp:
+    ldx #5
+.Laccmploop:
+    lda MO,x
+    cmp .Lb,x
+    bcc .Lacret
+    bne .Lacret
+    dex
+    bpl .Laccmploop
+.Lacret:
     rts

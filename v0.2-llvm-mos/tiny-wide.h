@@ -27,6 +27,9 @@ void tiny_rescale(Wide *,const uint8_t *,const TinyRescaleArgs *);
 /* Packing-only conversion. Shift in [-14,49], rounded result must fit
  * [-32767,32767] (guaranteed by pack's peak calculation). */
 int16_t tiny_pack16(const Wide *,int shift);
+/* Exact round(127*a/b), or zero if b==0. Attention alignment
+ * guarantees 0 <= a <= b <= 2^41. Return range 0..127. */
+int tiny_attention_coeff(const Wide *a,const Wide *b);
 /* Nonzero unsigned divisor required; public C wrappers check this. */
 void tiny_wdiv(Wide *,const Wide *,const Wide *);
 void tiny_wrounddiv(Wide *,const Wide *,const Wide *);
