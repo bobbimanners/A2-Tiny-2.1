@@ -1,4 +1,4 @@
-; TINY stage 11A - faster LLVM-MOS 65C02 MAC kernels.
+; TINY stage 11K - biased unsigned dot accumulation.
 ; Dot uses self-modifying absolute,Y loads and an immediate loop limit.
 ; Requires writable main-memory code; not reentrant. No new ZP reservation.
 ; Globals are provided by C. Non-reentrant, no bank switching.
@@ -26,7 +26,7 @@ acc = $0e
 ; Shared lookup planes are defined in tiny-qsquare-mos.s.
 .section .text,"ax",@progbits
 ; Input lhs = signed a XOR $80; A = signed b (raw byte).
-; Output pl:ph = signed product, X and flags clobbered; Y unchanged.
+; Output pl:A = signed product, X and flags clobbered; Y unchanged.
 ; Q[u+v] - Q[u-v+256], u=a+128, v=b+128.
 .macro PRODUCT
     eor #$80
@@ -50,7 +50,7 @@ acc = $0e
     sbc rhs
     tax
     bcc 3f
-    sec
+    ; Carry already set by the index subtraction.
     lda pl
     sbc ql+256,x
     sta pl
@@ -65,7 +65,6 @@ acc = $0e
     lda ph
     sbc qh,x
 4:
-    sta ph
 .endm
 
 .macro LOAD_B_N
@@ -128,22 +127,20 @@ tiny_mac65_dot:
 .Ldot_b:
     lda $ffff,y
     PRODUCT
+    ; Bias each signed product by $8000, accumulate as unsigned.
+    ; The sum wraps mod 2^24; remove n*$8000 once at the end.
+    eor #$80
+    tax
     clc
-    lda acc
-    adc pl
+    lda pl
+    adc acc
     sta acc
-    lda acc+1
-    adc ph
-    sta acc+1
-    ; Extend signed product into the 24-bit sum, preserving ADC carry.
-    ldx #0
-    lda ph
-    bpl 9f
-    dex
-9:
     txa
-    adc acc+2
-    sta acc+2
+    adc acc+1
+    sta acc+1
+    bcc 9f
+    inc acc+2
+9:
     iny
 .Ldot_limit:
     cpy #0
@@ -158,6 +155,22 @@ tiny_mac65_dot:
     sta .Ldot_limit+1
     jmp .Ltiny_mac65_dot_loop
 .Ltiny_mac65_dot_done:
+    ; n*$8000 mod 2^24 has bytes [0, (n&1)*128, n>>1].
+    lda tiny_mac_n+1
+    lsr a
+    lda tiny_mac_n
+    ror a
+    sta ph
+    lda #0
+    ror a
+    sta pl
+    sec
+    lda acc+1
+    sbc pl
+    sta acc+1
+    lda acc+2
+    sbc ph
+    sta acc+2
     lda acc
     sta tiny_mac_result
     lda acc+1
@@ -193,6 +206,7 @@ tiny_mac65_axpy:
     ldy #0
     lda (bp),y
     PRODUCT
+    sta ph
     clc
     lda (cp),y
     adc pl

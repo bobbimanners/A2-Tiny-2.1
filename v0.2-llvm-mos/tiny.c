@@ -1342,7 +1342,7 @@ int main(void) {
 #if !defined(TINY_PRODOS_HOST_TEST)
     __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory"); // HOME
 #endif
-    puts("TINY v0.2 / Stage 11J");
+    puts("TINY v0.2 / Stage 11K");
     puts("Apple //e / LLVM-MOS / RamWorks");
 #ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)
