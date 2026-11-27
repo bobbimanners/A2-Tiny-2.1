@@ -1259,6 +1259,7 @@ static void attention(Layer *a,int p,const Vec *q,Vec *dst) {
     for(i=0;i<D;i++)align(&wide[i],&scratch.projection.attention_result[i],scratch.attention_out_exp[i],e);
     pack(dst,wide,D,e);
 }
+/* A NULL output requests KV-cache updates only (non-final prompt token). */
 static void step(int tok,int p,Vec *out) {
     int l,i;Layer *a;
     row(&emb,tok,&x);row(&pos,p,&tmp);residual(&x,&tmp,D);note(&x,D,&peak_residual);
@@ -1266,6 +1267,8 @@ static void step(int tok,int p,Vec *out) {
         a=&layers[l];fetch_gain(&a->g1);normalize(&x,&gain_work,&normed);note(&normed,D,&peak_norm);
         matvec(&a->k,&normed,&tmp);note(&tmp,D,&peak_proj);cache_store(&a->key,p,&tmp);
         matvec(&a->v,&normed,&tmp);note(&tmp,D,&peak_proj);cache_store(&a->value,p,&tmp);
+        /* No later layer consumes the last layer's output in cache-only mode. */
+        if(!out && l==L-1)return;
         matvec(&a->q,&normed,&query);note(&query,D,&peak_proj);
         attention(a,p,&query,&att);note(&att,D,&peak_att);
         matvec(&a->o,&att,&tmp);note(&tmp,D,&peak_proj);residual(&x,&tmp,D);note(&x,D,&peak_residual);
@@ -1319,7 +1322,7 @@ static void apple_answer(const char *q) {
     int p,t,n=(int)strlen(q),letters=0;
     puts("Thinking...");
     for(p=0;p<=n;p++){
-        t=p==n?1:(unsigned char)q[p]-30;step(t,p,&score);
+        t=p==n?1:(unsigned char)q[p]-30;step(t,p,p==n?&score:NULL);
         putchar('.');console_flush();
     }
     putchar('\n');
@@ -1342,7 +1345,7 @@ int main(void) {
 #if !defined(TINY_PRODOS_HOST_TEST)
     __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory"); // HOME
 #endif
-    puts("TINY v0.2 / Stage 11K");
+    puts("TINY v0.2 / Stage 11L");
     puts("Apple //e / LLVM-MOS / RamWorks");
 #ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)
@@ -1399,7 +1402,7 @@ static void answer(const char *q,int trace) {
     int p,i,t,n=(int)strlen(q),letters=0;clock_t start=clock(),end;uint32_t ticks,sec,frac;Wide wt;
     if(trace){printf("position,input_token");for(i=0;i<VOCAB;i++)printf(",logit_%d",i);putchar('\n');}
     for(p=0;p<=n;p++){
-        t=p==n?1:(unsigned char)q[p]-30;step(t,p,&score);
+        t=p==n?1:(unsigned char)q[p]-30;step(t,p,(p==n||trace||profiling)?&score:NULL);
         if(trace){printf("%d,%d",p,t);for(i=0;i<VOCAB;i++){putchar(',');print_number(stdout,score.v[i],score.exp);}putchar('\n');}
     }
     if(trace)return;
