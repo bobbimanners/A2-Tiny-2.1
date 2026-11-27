@@ -133,12 +133,24 @@ void tiny_aux_exp(uint32_t *d);
 #endif
 /* Initialized as the compact LUT in the SYS file. After the model is
  * loaded, move the table to aux bank zero, then reuse its main RAM. */
+/* On the native build the first AUX_LUT_HEAD bytes of the table live in
+ * tiny-qsquare-mos.s, as the initial contents of memory the MAC kernels
+ * take over once the table is in auxiliary memory. That keeps the load
+ * image under the ProDOS SYS limit. */
+#if !defined(TINY_PRODOS_HOST_TEST)
+#define TINY_LUT_SPLIT
+#define AUX_LUT_HEAD 1056u
+extern const uint8_t tiny_exp_lut_head[AUX_LUT_HEAD];
+#else
+#define AUX_LUT_HEAD 0u
+#endif
 typedef union {
-    uint8_t lut[1152][3];
+    uint8_t lut[(AUX_LUT_SIZE-AUX_LUT_HEAD)/3u][3];
     struct { Vec vx,vnorm,vtmp,vhidden; } vec;
 } AuxOverlay;
 static AuxOverlay overlay;
 typedef char overlay_fits[(sizeof(overlay.vec)<=AUX_LUT_SIZE)?1:-1];
+typedef char lut_split_exact[((AUX_LUT_SIZE-AUX_LUT_HEAD)%3u==0)?1:-1];
 static uint8_t aux_lut_active;
 static void aux_lut_restore(void);
 #define work_x (overlay.vec.vx)
@@ -562,11 +574,16 @@ static int32_t wtoi(const Wide *a) {
 /* Scratch phases are mutually exclusive. Attention keeps its per-head
  * scores here until the last head is done, then reuses it for final packing.
  * pick() runs after step() and needs neither of those arrays. */
+typedef struct { uint16_t m; int16_t exp; } PackedScale;
 typedef struct {
     union {
         Wide wide_values[MAXHID];
         Wide attention_scores[CTX];
         uint32_t pick_weights[VOCAB];
+        /* While heads are scored the space above the scores is idle.
+         * It holds each cached position's key and value scale, read
+         * once per attention call instead of once per head. */
+        struct { Wide scores[CTX]; PackedScale key[CTX], value[CTX]; } attn;
     } phase;
     union {
         Wide attention_result[MAXD];
@@ -617,12 +634,14 @@ static void note(Vec *dst,int n,Peak *peak) {
 static void pack(Vec *dst,const Wide *src,int n,int exp) {
     Wide m,a;int i,shift;
 #if defined(TINY_MOS) && defined(TINY_WIDE_ASM)
-    int16_t val;
+    int16_t pargs[2];
+    (void)i;
+    tiny_wmaxmag(&m,src,(unsigned)n);
 #else
     Wide v;int32_t val;
-#endif
     wu(&m,0);
     for(i=0;i<n;i++){wmag(&a,&src[i]);if(wc(&a,&m)>0)m=a;}
+#endif
     if(profiling)packs++;
     if(wz(&m)){memset(dst->v,0,(size_t)n*sizeof(dst->v[0]));dst->exp=0;if(profiling)zeros++;return;}
     /* Match the old repeated ceiling shifts: ceil(m / 2^shift) <= 32767.
@@ -633,18 +652,19 @@ static void pack(Vec *dst,const Wide *src,int n,int exp) {
         if(wc(&m,&a)>0)shift++;
     }
     dst->exp=exp+shift;
-    for(i=0;i<n;i++){
 #if defined(TINY_MOS) && defined(TINY_WIDE_ASM)
-        /* The peak calculation above guarantees -32767..32767. */
-        val=tiny_pack16(&src[i],shift);
+    /* The peak calculation above guarantees -32767..32767. */
+    pargs[0]=(int16_t)n;pargs[1]=(int16_t)shift;
+    tiny_pack_rows(dst->v,src,pargs);
 #else
+    for(i=0;i<n;i++){
         if(shift>=0)rshift(&v,&src[i],shift);else wl(&v,&src[i],-shift);
         val=wtoi(&v);
         if(val>32767L||val< -32767L){if(profiling)saturation++;die("fixed-point packing overflow");}
-#endif
         if(profiling&&!wz(&src[i])&&!val)rounded_zero++;
         dst->v[i]=(int16_t)val;
     }
+#endif
 }
 static int peak16(const int16_t *v,int n) {int i;int32_t m=0,a;for(i=0;i<n;i++){a=v[i];if(a<0)a=-a;if(a>m)m=a;}if(m>32767L)die("invalid packed vector");return (int)m;}
 static int q8(const int16_t *v,int8_t *out,int n) {
@@ -670,6 +690,8 @@ const int8_t *tiny_mac_a, *tiny_mac_b;
 uint16_t tiny_mac_n;
 int32_t tiny_mac_result;
 int8_t tiny_mac_coeff;
+uint16_t tiny_mac_stride;
+uint8_t tiny_mac_rows;
 int32_t *tiny_mac_acc;
 extern void tiny_mac65_dot(void);
 extern void tiny_mac65_axpy(void);
@@ -677,21 +699,24 @@ extern void tiny_mac65_axpy(void);
 extern void tiny_mac65_prepare(void);
 extern void tiny_mac65_prepared_dot(void);
 extern void tiny_mac65_aux_dot(void);
+extern void tiny_mac65_aux_rows(void);
+extern void tiny_mac65_axpy_begin(void);
+extern void tiny_mac65_aux_axpy(void);
+extern void tiny_mac65_axpy_end(void);
 extern const uint8_t tiny_mac65_aux_end[], ql[];
 extern int8_t tiny_mac65_work[512];
+extern void tiny_mac65_init(void);
 #if !defined(TINY_COPY_MAC)
 #define TINY_DIRECT_MAC
 #endif
 #endif
+/* Native matrix rows and attention scores both use the prepared kernel,
+ * so the general dot is only needed by other assembly-MAC targets. */
+#ifndef TINY_MOS
 static int32_t dot8_chunk(const int8_t *a,const int8_t *b,int n) {
     tiny_mac_a=a; tiny_mac_b=b; tiny_mac_n=(uint16_t)n;
     tiny_mac65_dot(); return tiny_mac_result;
 }
-#ifdef TINY_MOS
-/* Native matrix rows now use prepared_dot. The remaining dot8 caller
- * is attention, with HD <= MAXD <= 96, so no chunking is needed. */
-#define dot8 dot8_chunk
-#else
 static int32_t dot8(const int8_t *a,const int8_t *b,int n) {
     int32_t sum=0;
     /* 512 arbitrary signed byte pairs can exceed signed 24-bit by one.
@@ -700,10 +725,12 @@ static int32_t dot8(const int8_t *a,const int8_t *b,int n) {
     return sum+dot8_chunk(a,b,n);
 }
 #endif
+#ifndef TINY_DIRECT_MAC
 static void axpy8(int32_t *accum,int8_t c,const int8_t *v,int n) {
     tiny_mac_acc=accum;tiny_mac_coeff=c;tiny_mac_b=v;
     tiny_mac_n=(uint16_t)n;tiny_mac65_axpy();
 }
+#endif
 #else
 /* Exact signed byte multiplication using quarter squares.
  * Q[t+256] = floor(t*t/4), -256 <= t <= 255.
@@ -833,19 +860,46 @@ static void matvec(const Table *t,const Vec *src,Vec *dst) {
 #endif
     /* rw_alloc packs complete records consecutively, skipping only the
      * unusable tail of a bank. Walk that layout without mul/div per row. */
-    for(r=0;r<t->rows;r++){
-        if(off>last){++bank;off=RW_LO;}
 #ifdef TINY_DIRECT_MAC
+    /* Up to eight rows per kernel call; a batch never spans two banks. */
+    unsigned room=t->data.first;
+    (void)last;
+    tiny_mac_stride=(uint16_t)n;
+    for(r=0;r<t->rows;){
+        unsigned k=(unsigned)(t->rows-r);
+#if defined(TINY_WIDE_ASM)
+        uint16_t rargs[2];
+#else
+        unsigned i;
+#endif
+        if(!room){++bank;off=RW_LO;room=t->data.per;}
+        if(k>8u)k=8u;
+        if(k>room)k=room;
         tiny_mac_a=(const int8_t *)(uintptr_t)off;
         tiny_mac_coeff=(int8_t)bank;
-        tiny_mac65_aux_dot();
-        /* Count logical reads, not bytes copied into main memory. */
-        rw_select(bank);++rw_reads;rw_read_bytes+=n;
+        tiny_mac_rows=(uint8_t)k;
+        tiny_mac65_aux_rows();
+        rw_select(bank);
+#if defined(TINY_WIDE_ASM)
+        rargs[0]=(uint16_t)k;rargs[1]=args.peak;
+        tiny_rescale_rows(&wide[r],rowbuf,rargs);
 #else
+        for(i=0;i<k;i++){
+            const uint8_t *res=rowbuf+8u*i;
+            wi(&a,signed32(get32(res+4)));
+            wmi(&a,&a,signed32(get32(res)));wmu(&wide[r+(int)i],&a,(uint32_t)m);
+        }
+#endif
+        off+=k*n;r+=(int)k;room-=k;
+    }
+    /* Count logical reads, not bytes copied into main memory. */
+    rw_reads+=(uint32_t)t->rows;rw_read_bytes+=(uint32_t)t->rows*n;
+#else
+    for(r=0;r<t->rows;r++){
+        if(off>last){++bank;off=RW_LO;}
         rw_read_at(bank,off,rowbuf,n);
 #ifdef TINY_MOS
         tiny_mac65_prepared_dot();
-#endif
 #endif
         off+=n;
 #if defined(TINY_MOS) && defined(TINY_WIDE_ASM)
@@ -860,6 +914,7 @@ static void matvec(const Table *t,const Vec *src,Vec *dst) {
         wmi(&a,&a,signed32(get32(rowbuf)));wmu(&wide[r],&a,(uint32_t)m);
 #endif
     }
+#endif
     pack(dst,wide,t->rows,e);
 }
 static void row(const Table *t,int r,Vec *dst) {
@@ -875,9 +930,21 @@ static void residual(Vec *a,const Vec *b,int n) {
     if(!peak16(b->v,n))return;
     if(!peak16(a->v,n)){*a=*b;return;}
     e=(a->exp>b->exp?a->exp:b->exp)-16;
+#if defined(TINY_MOS) && defined(TINY_WIDE_ASM)
+    {
+        /* One shift is 16; the other is at most that. A 16-bit value
+         * shifted right by 16 or more rounds to zero. */
+        TinyResidualArgs ra;int sa=a->exp-e,sb=b->exp-e;
+        (void)i;(void)av;(void)bv;
+        ra.b=b->v;ra.n=(uint16_t)n;
+        ra.sa=(int8_t)(sa< -16?-16:sa);ra.sb=(int8_t)(sb< -16?-16:sb);
+        tiny_residual_rows(wide,a->v,&ra);
+    }
+#else
     for(i=0;i<n;i++){
         wi(&av,a->v[i]);wi(&bv,b->v[i]);align(&av,&av,a->exp,e);align(&bv,&bv,b->exp,e);wa(&wide[i],&av,&bv);
     }
+#endif
     pack(a,wide,n,e);
 }
 static uint32_t isqrt_round(const Wide *src) {
@@ -893,13 +960,17 @@ static uint32_t isqrt_round(const Wide *src) {
 }
 static void normalize(const Vec *src,const Gain *g,Vec *dst) {
     int i,xe,hi,eh,e;Wide ss,mean,rad,t,eps,b,inv;uint32_t root;
-    wu(&ss,0);
 #ifdef TINY_U64
     eps=UINT64_C(11258999068);
 #else
     eps.hi=2;eps.lo=U32(2669064476);
 #endif
+#if defined(TINY_MOS) && defined(TINY_WIDE_ASM)
+    tiny_sumsq(&ss,src->v,(unsigned)D);
+#else
+    wu(&ss,0);
     for(i=0;i<D;i++){int32_t v=src->v[i];wu(&t,(uint32_t)(v*v));wa(&ss,&ss,&t);}
+#endif
     if(wz(&ss)){memset(wide,0,(size_t)D*sizeof(wide[0]));pack(dst,wide,D,0);return;}
     wl(&mean,&ss,16);wu(&b,(uint32_t)D);wrounddiv(&mean,&mean,&b);
     xe=2*src->exp-16;hi=topbit(&mean)+xe;eh=topbit(&eps)-50;
@@ -936,6 +1007,7 @@ static AuxOverlay overlay = { .lut = {
 #else
 static const uint8_t exp_lut_compact[1152][3] = {
 #endif
+#ifndef TINY_LUT_SPLIT
     {245,7,252}, {171,31,248}, {227,70,244}, {96,125,240}, {228,194,236}, {53,23,233}, {23,122,229}, {81,235,225},
     {170,106,222}, {233,247,218}, {216,146,215}, {65,59,212}, {237,240,208}, {168,179,205}, {62,131,202}, {125,95,199},
     {50,72,196}, {43,61,193}, {56,62,190}, {41,75,187}, {207,99,184}, {252,135,181}, {128,183,178}, {49,242,175},
@@ -980,6 +1052,7 @@ static const uint8_t exp_lut_compact[1152][3] = {
     {166,127,1}, {180,121,1}, {217,115,1}, {21,110,1}, {104,104,1}, {209,98,1}, {81,93,1}, {231,87,1},
     {146,82,1}, {82,77,1}, {39,72,1}, {17,67,1}, {15,62,1}, {32,57,1}, {69,52,1}, {126,47,1},
     {201,42,1}, {40,38,1}, {152,33,1}, {27,29,1}, {175,24,1}, {85,20,1}, {12,16,1}, {213,11,1},
+#endif
     {174,7,1}, {151,3,1}, {145,255,0}, {155,251,0}, {180,247,0}, {221,243,0}, {21,240,0}, {92,236,0},
     {178,232,0}, {22,229,0}, {137,225,0}, {10,222,0}, {153,218,0}, {53,215,0}, {223,211,0}, {150,208,0},
     {90,205,0}, {43,202,0}, {9,199,0}, {243,195,0}, {233,192,0}, {236,189,0}, {250,186,0}, {20,184,0},
@@ -1104,7 +1177,10 @@ static void aux_lut_begin(void) {
     if(rw_last_bank>=15u && rw_next_off>AUX_LUT_BACKUP)
         die("No aux LUT backup space");
     aux_lut_copy(0,AUX_LUT_ADDR,15,AUX_LUT_BACKUP);
-    tiny_rw_write(0,AUX_LUT_ADDR,overlay.lut,AUX_LUT_SIZE);
+#ifdef TINY_LUT_SPLIT
+    tiny_rw_write(0,AUX_LUT_ADDR,tiny_exp_lut_head,AUX_LUT_HEAD);
+#endif
+    tiny_rw_write(0,AUX_LUT_ADDR+AUX_LUT_HEAD,overlay.lut,AUX_LUT_SIZE-AUX_LUT_HEAD);
     aux_lut_active=1;
 #if !defined(TINY_PRODOS_HOST_TEST)
     tiny_rw_write(0,AUX_EXP_ADDR,tiny_aux_exp_image,n);
@@ -1327,25 +1403,135 @@ static uint32_t delta_q16(const Wide *m,int e,unsigned mul,unsigned div) {
     if(div!=1)wrounddiv(&v,&v,&b);
     return WHI(v)||WLO(v)>=EXP_LIMIT?EXP_LIMIT:WLO(v);
 }
+/* One attention score: raw = dot*m*csm, normalized to at most 30 bits with
+ * rounding, times the attention factor. Returns the normalizing shift;
+ * *top is the top bit of the magnitude, or -1 for a zero score. */
+#if !(defined(TINY_DIRECT_MAC) && defined(TINY_WIDE_ASM))
+static int att_score(Wide *out,int32_t dot,int m,unsigned csm,int *top) {
+    Wide raw,t;int shift;
+    wi(&raw,dot);wmu(&raw,&raw,(uint32_t)m);wmu(&raw,&raw,csm);
+    wmag(&t,&raw);shift=wz(&t)?0:topbit(&t)-29;if(shift<0)shift=0;
+    rshift(&t,&raw,shift);wmu(out,&t,att_factor);
+    if(wz(out))*top=-1;else{wmag(&t,out);*top=topbit(&t);}
+    return shift;
+}
+#endif
+#if defined(TINY_DIRECT_MAC) && defined(TINY_WIDE_ASM)
+/* Shared with tiny_att_batch in tiny-mac65-mos.s. */
+TinyScoreArgs tiny_att_args;
+Wide *tiny_att_out;
+int16_t *tiny_att_exps;
+PackedScale *tiny_att_ks;
+int16_t tiny_att_base, tiny_att_hi;
+uint8_t tiny_att_first;
+extern void tiny_att_batch(void);
+#endif
+#ifdef TINY_DIRECT_MAC
+/* Score every cached key against the prepared query head. Walks the key
+ * records in place, up to eight per kernel call, as matvec walks matrix
+ * rows. Each result is the four bytes ahead of the weights and the dot; for
+ * head 0 those bytes are the record's scale, kept for the other heads.
+ * Returns the highest magnitude bit over all scores, or INT_MIN. */
+static int att_key_scores(const Layer *a,int p,int h,int qexp,int m) {
+    PackedScale *ks=scratch.phase.attn.key;
+    unsigned kbank=a->key.bank,koff=a->key.off,room=a->key.first,kstride=a->key.stride;
+    int j;
+#if defined(TINY_WIDE_ASM)
+    typedef char exps_are_16_bit[(sizeof(int)==2)?1:-1];
+    tiny_att_args.m=(uint16_t)m;tiny_att_args.factor=att_factor;
+    tiny_att_out=scratch.phase.attention_scores;tiny_att_exps=(int16_t *)scratch.attention_exps;
+    tiny_att_ks=ks;tiny_att_base=(int16_t)(qexp-44);tiny_att_hi=INT16_MIN;tiny_att_first=(uint8_t)!h;
+#else
+    int shift,top,hi=INT_MIN;
+#endif
+    tiny_mac_b=(const int8_t *)rowbuf;tiny_mac_stride=(uint16_t)kstride;
+    for(j=0;j<=p;){
+        unsigned k=(unsigned)(p+1-j);
+        if(!room){++kbank;koff=RW_LO;room=a->key.per;}
+        if(k>8u)k=8u;
+        if(k>room)k=room;
+        tiny_mac_a=(const int8_t *)(uintptr_t)(koff+(unsigned)h*(unsigned)HD);
+        tiny_mac_coeff=(int8_t)kbank;tiny_mac_rows=(uint8_t)k;
+        tiny_mac65_aux_rows();
+        koff+=k*kstride;room-=k;
+#if defined(TINY_WIDE_ASM)
+        tiny_att_batch();j+=(int)k;
+#else
+        {unsigned i;
+        for(i=0;i<k;i++,j++){
+            const uint8_t *res=rowbuf+8u*i;
+            if(!h){ks[j].m=(uint16_t)get16(res);ks[j].exp=(int16_t)signed16(get16(res+2));}
+            shift=att_score(&scratch.phase.attention_scores[j],signed32(get32(res+4)),m,ks[j].m,&top);
+            scratch.attention_exps[j]=qexp+ks[j].exp+shift-44;
+            if(top>=0&&top+scratch.attention_exps[j]>hi)hi=top+scratch.attention_exps[j];
+        }}
+#endif
+    }
+#if defined(TINY_WIDE_ASM)
+    return tiny_att_hi==INT16_MIN?INT_MIN:tiny_att_hi;
+#else
+    return hi;
+#endif
+}
+/* Sum the cached values of one head, weighted by attention_av, in place.
+ * The kernel is fixed at 24 values per head. */
+static void att_value_sums(const Layer *a,int p,int h) {
+    unsigned head=4u+(unsigned)h*(unsigned)HD;
+    unsigned bank=a->value.bank,off=a->value.off+head,room=a->value.first;
+    int j;
+    tiny_mac65_axpy_begin();
+    for(j=0;j<=p;j++){
+        if(!room){++bank;off=RW_LO+head;room=a->value.per;}
+        if(scratch.attention_av[j]){
+            tiny_mac_a=(const int8_t *)(uintptr_t)off;
+            tiny_mac_rows=(uint8_t)bank;tiny_mac_coeff=scratch.attention_av[j];
+            tiny_mac65_aux_axpy();
+        }
+        off+=a->value.stride;--room;
+    }
+    tiny_mac_acc=scratch.attention_accum;tiny_mac65_axpy_end();
+}
+#endif
+typedef char att_scales_fit[(sizeof(scratch.phase.attn)<=sizeof(scratch.phase.wide_values))?1:-1];
 static void attention(Layer *a,int p,const Vec *q,Vec *dst) {
-    int h,j,i,m,hi,e,he,shift;
-    Wide raw,big,s,t,den,scale;
+    PackedScale *ks=scratch.phase.attn.key,*vs=scratch.phase.attn.value;
+    int h,j,i,m,hi,e,he,shift,top;
+    Wide big,s,t,den,scale;
     uint32_t sum,weight;int out_hi=INT_MIN;CacheScale cs;
     for(h=0;h<H;h++){
+#ifdef TINY_MOS
+        /* The query head is fixed while the cached keys vary, the same shape
+         * as a matrix row loop. Prepare it once in the MAC workspace (free
+         * between projections) and reuse the matrix kernels for every key. */
+        m=q8(q->v+h*HD,tiny_mac65_work,HD);hi=INT_MIN;
+        tiny_mac_a=(const int8_t *)rowbuf;tiny_mac_b=tiny_mac65_work;
+        tiny_mac_n=(uint16_t)HD;tiny_mac65_prepare();
+#else
         m=q8(q->v+h*HD,scratch.attention_aq,HD);hi=INT_MIN;
+#endif
+#ifdef TINY_DIRECT_MAC
+        hi=att_key_scores(a,p,h,q->exp,m);
+#else
         for(j=0;j<=p;j++){
-            cache_scale(&a->key,j,&cs);cache_head(&a->key,j,h);
-            wi(&raw,dot8(scratch.attention_aq,(const int8_t *)rowbuf,HD));wmu(&raw,&raw,(uint32_t)m);wmu(&raw,&raw,cs.m);
-            wmag(&t,&raw);shift=wz(&t)?0:topbit(&t)-29;if(shift<0)shift=0;
-            rshift(&t,&raw,shift);wmu(&scratch.phase.attention_scores[j],&t,att_factor);
-            scratch.attention_exps[j]=q->exp+cs.exp+shift-44;update_hi(&scratch.phase.attention_scores[j],scratch.attention_exps[j],&hi);
+            if(!h){cache_scale(&a->key,j,&cs);ks[j].m=cs.m;ks[j].exp=(int16_t)cs.exp;}
+            cache_head(&a->key,j,h);
+#ifdef TINY_MOS
+            tiny_mac65_prepared_dot();
+            shift=att_score(&scratch.phase.attention_scores[j],tiny_mac_result,m,ks[j].m,&top);
+#else
+            shift=att_score(&scratch.phase.attention_scores[j],dot8(scratch.attention_aq,(const int8_t *)rowbuf,HD),m,ks[j].m,&top);
+#endif
+            scratch.attention_exps[j]=q->exp+ks[j].exp+shift-44;
+            if(top>=0&&top+scratch.attention_exps[j]>hi)hi=top+scratch.attention_exps[j];
         }
+#endif
         e=hi==INT_MIN?0:hi-45;
         for(j=0;j<=p;j++){align(&scratch.phase.attention_scores[j],&scratch.phase.attention_scores[j],scratch.attention_exps[j],e);if(j==0||wcs(&scratch.phase.attention_scores[j],&big)>0)big=scratch.phase.attention_scores[j];}
         sum=0;hi=INT_MIN;
         for(j=0;j<=p;j++){
             ws(&t,&big,&scratch.phase.attention_scores[j]);weight=exp_neg_q16(delta_q16(&t,e,1,1));sum+=weight;
-            cache_scale(&a->value,j,&cs);
+            if(!h){cache_scale(&a->value,j,&cs);vs[j].m=cs.m;vs[j].exp=(int16_t)cs.exp;}
+            cs.m=vs[j].m;cs.exp=vs[j].exp;
             wu(&t,weight);wmu(&scratch.phase.attention_scores[j],&t,cs.m);scratch.attention_exps[j]=cs.exp;update_hi(&scratch.phase.attention_scores[j],scratch.attention_exps[j],&hi);
         }
         e=hi==INT_MIN?0:hi-40;wu(&big,0);
@@ -1357,8 +1543,12 @@ static void attention(Layer *a,int p,const Vec *q,Vec *dst) {
             if(wz(&big))scratch.attention_av[j]=0;else{wmu(&t,&scratch.phase.attention_scores[j],127);wrounddiv(&t,&t,&big);scratch.attention_av[j]=(int8_t)WLO(t);}
 #endif
         }
+#ifdef TINY_DIRECT_MAC
+        att_value_sums(a,p,h);
+#else
         for(i=0;i<HD;i++)scratch.attention_accum[i]=0;
         for(j=0;j<=p;j++)if(scratch.attention_av[j]){cache_head(&a->value,j,h);axpy8(scratch.attention_accum,scratch.attention_av[j],(const int8_t *)rowbuf,HD);}
+#endif
         wu(&den,sum);wmu(&den,&den,16129);wl(&t,&big,22);wrounddiv(&scale,&t,&den);he=e-22;
         for(i=0;i<HD;i++){
             wi(&s,scratch.attention_accum[i]);wm(&s,&s,&scale);scratch.projection.attention_result[h*HD+i]=s;scratch.attention_out_exp[h*HD+i]=he;update_hi(&s,he,&out_hi);
@@ -1460,7 +1650,7 @@ int main(void) {
 #if !defined(TINY_PRODOS_HOST_TEST)
     reserve_scratch();
 #ifdef TINY_DIRECT_MAC
-    if((uintptr_t)tiny_mac65_dot<0x2000u ||
+    if((uintptr_t)tiny_mac65_prepare<0x2000u ||
        (uintptr_t)tiny_mac65_aux_end>0x4000u ||
        (uintptr_t)ql<0x2000u ||
        (uintptr_t)tiny_mac65_work+512u>0x4000u)
@@ -1483,6 +1673,11 @@ int main(void) {
        exp_neg_q16(512)!=U32(16647162) || exp_neg_q16(EXP_LIMIT-1)!=0)
         die("Aux exp self-test");
     puts("Aux0 exp active; quit restores aux0.");
+#endif
+#ifdef TINY_MOS
+    /* The start of the exp table is in auxiliary memory now; its main-memory
+     * bytes become the MAC workspace and the biased table plane. */
+    tiny_mac65_init();
 #endif
     rw_stats("load");rw_reset_stats();
     puts(":check toggles hash trace; :banks stats; quit exits.");

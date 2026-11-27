@@ -6,6 +6,8 @@ uint16_t tiny_mac_n;
 int32_t tiny_mac_result;
 int8_t tiny_mac_coeff;
 int32_t *tiny_mac_acc;
+uint16_t tiny_mac_stride;
+uint8_t tiny_mac_rows;
 extern void tiny_mac65_dot(void);
 extern void tiny_mac65_axpy(void);
 static int8_t a[516], b[516];

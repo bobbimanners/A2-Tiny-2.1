@@ -22,6 +22,18 @@ For FILETEST, place `TINY.INT` in the current ProDOS directory and compare its
 output with `python3 tests/model-hash.py TINY.INT` on the host. WIDETEST should
 report PASS and 1788 checks. MACBENCH's expected checksum is 41417000.
 
+## Simulator and emulator checks
+
+`make sim-test` builds `tiny-asm-test.c` for the LLVM-MOS simulator and
+compares every assembly kernel with plain C arithmetic. It needs no Apple II
+and runs in seconds; run it after any change to the `.s` files. Add
+`MACASM=-Wa,--defsym,TINY_SINGLE_ROW=1` to test the single-row kernel variant.
+
+`mame-profile.lua` boots a disk image in MAME, types a question, and either
+times the answer while sampling the call stack or, with `TINY_CHECK=1`,
+prints the `:check` hash rows for comparison with `tiny-linux --check`.
+`profile-report.py` summarizes the samples. See `../OPTIMIZATION.md`.
+
 ## Host regression
 
 ```sh

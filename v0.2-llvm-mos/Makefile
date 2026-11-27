@@ -3,13 +3,18 @@ HOSTCC ?= cc
 MOSFLAGS ?= -mcpu=mos65c02 -Oz -flto -fno-inline-functions -fno-unroll-loops
 # Keep these defaults for the memory-constrained native build.
 EXTRA ?= -DTINY_COMPACT_LUT -DTINY_AUX0_LUT
-MACFLAGS = -mreserve-zp=6
+MACFLAGS = -mreserve-zp=30
+# Assembler options for the MAC kernels (see tiny-mac65-mos.s), for example
+#   make MACASM=-Wa,--defsym,TINY_SINGLE_ROW=1
+MACASM ?=
+SIMCC ?= /opt/llvm-mos/bin/mos-sim-clang
+SIM ?= /opt/llvm-mos/bin/mos-sim
 HOSTFLAGS ?= -std=c99 -O2 -Wall -Wextra
 MAIN = tiny.c tiny-wide-mos.s tiny-rw65.c tiny-rw65-mos.s tiny-mac65-mos.s tiny-qsquare-mos.s tiny-prodos.c tiny-prodos-asm.s
 HEADERS = tiny-rw65.h tiny-prodos.h tiny-wide.h
 TESTDIR = tests
 
-.PHONY: all tests host wide-test verify-wide clean test
+.PHONY: all tests host wide-test verify-wide sim-test clean test
 .DELETE_ON_ERROR:
 all: tiny.po
 
@@ -24,8 +29,8 @@ tiny.po: TINY.SYSTEM ../v0.1-cc65/TINY.INT\#060000 ../prodos.242/PRODOS\#FF0000
 	cadius addfile tiny-build.po /TINY '../v0.1-cc65/TINY.INT#060000'
 	mv tiny-build.po $@
 
-TINY.SYSTEM: $(MAIN) $(HEADERS) Makefile
-	$(MOSCC) $(MOSFLAGS) $(MACFLAGS) $(EXTRA) -DTINY_MOS -DTINY_WIDE_ASM -Wl,-Map=tiny-mos.map $(MAIN) -o $@
+TINY.SYSTEM: $(MAIN) $(HEADERS) tiny-link.ld Makefile
+	$(MOSCC) $(MOSFLAGS) $(MACFLAGS) $(MACASM) $(EXTRA) -DTINY_MOS -DTINY_WIDE_ASM -T tiny-link.ld -Wl,-Map=tiny-mos.map $(MAIN) -o $@
 
 # Optional standalone native diagnostics; not linked into TINY.SYSTEM.
 tests: FILETEST.SYSTEM RWTEST.SYSTEM MACTEST.SYSTEM WIDETEST.SYSTEM
@@ -40,11 +45,17 @@ FILETEST.SYSTEM: $(TESTDIR)/tiny-file-test.c tiny-prodos.c tiny-prodos-asm.s tin
 RWTEST.SYSTEM: $(TESTDIR)/tiny-rw65-test.c tiny-rw65.c tiny-rw65-mos.s tiny-rw65.h
 	$(MOSCC) $(MOSFLAGS) -I. $(TESTDIR)/tiny-rw65-test.c tiny-rw65.c tiny-rw65-mos.s -o $@
 MACTEST.SYSTEM: $(TESTDIR)/tiny-mac65-test.c tiny-mac65-mos.s tiny-qsquare-mos.s
-	$(MOSCC) $(MOSFLAGS) $(MACFLAGS) -I. $^ -o $@
+	$(MOSCC) $(MOSFLAGS) $(MACFLAGS) -Wa,--defsym,TINY_MAC_GENERAL=1 -I. $^ -o $@
 MACFULL.SYSTEM: $(TESTDIR)/tiny-mac65-test.c tiny-mac65-mos.s tiny-qsquare-mos.s
-	$(MOSCC) $(MOSFLAGS) $(MACFLAGS) -I. -DTINY_MAC_FULL $^ -o $@
+	$(MOSCC) $(MOSFLAGS) $(MACFLAGS) -Wa,--defsym,TINY_MAC_GENERAL=1 -I. -DTINY_MAC_FULL $^ -o $@
 MACBENCH.SYSTEM: $(TESTDIR)/tiny-mac65-test.c tiny-mac65-mos.s tiny-qsquare-mos.s
-	$(MOSCC) $(MOSFLAGS) $(MACFLAGS) -I. -DTINY_MAC_BENCH $^ -o $@
+	$(MOSCC) $(MOSFLAGS) $(MACFLAGS) -Wa,--defsym,TINY_MAC_GENERAL=1 -I. -DTINY_MAC_BENCH $^ -o $@
+
+# Assembly kernels against C arithmetic, in the LLVM-MOS simulator.
+sim-test: asm-test.sim
+	$(SIM) --cmos asm-test.sim
+asm-test.sim: $(TESTDIR)/tiny-asm-test.c tiny-wide-mos.s tiny-mac65-mos.s tiny-qsquare-mos.s tiny-wide.h
+	$(SIMCC) -mcpu=mos65c02 -Os $(MACFLAGS) -Wa,--defsym,TINY_MAC_GENERAL=1 $(MACASM) -I. $(TESTDIR)/tiny-asm-test.c tiny-wide-mos.s tiny-mac65-mos.s tiny-qsquare-mos.s -o $@
 
 # Portable C references and host-only substitutes for hardware/MLI.
 host: tiny-linux tiny-reader-linux tiny-apple-mock
@@ -56,7 +67,7 @@ tiny-apple-mock: tiny.c tiny-prodos.c tiny-prodos.h tiny-rw65.h $(TESTDIR)/host-
 	$(HOSTCC) $(HOSTFLAGS) -I. -DTINY_MOS -DTINY_PRODOS_HOST_TEST $(EXTRA) tiny.c tiny-prodos.c $(TESTDIR)/host-mock.c -o $@
 
 clean:
-	rm -f TINY.SYSTEM 'TINY.SYSTEM#FF2000' tiny-build.po FILETEST.SYSTEM RWTEST.SYSTEM MACTEST.SYSTEM WIDETEST.SYSTEM MACFULL.SYSTEM MACBENCH.SYSTEM *.SYSTEM.elf tiny-mos.map wide-test.map tiny-linux tiny-reader-linux tiny-apple-mock
+	rm -f asm-test.sim asm-test.sim.elf TINY.SYSTEM 'TINY.SYSTEM#FF2000' tiny-build.po FILETEST.SYSTEM RWTEST.SYSTEM MACTEST.SYSTEM WIDETEST.SYSTEM MACFULL.SYSTEM MACBENCH.SYSTEM *.SYSTEM.elf tiny-mos.map wide-test.map tiny-linux tiny-reader-linux tiny-apple-mock
 
 test: tiny.po
 	mame -w apple2ee -aux rw3 -sl7 cffa202 -hard1 tiny.po -nothrottle -natural -console -frameskip 0
