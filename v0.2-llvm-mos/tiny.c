@@ -548,13 +548,18 @@ static void note(Vec *dst,int n,Peak *peak) {
 /* Pack wide integer values into a 16-bit vector; choose the finest common
  * binary exponent for which rounding does not exceed +/-32767. */
 static void pack(Vec *dst,const Wide *src,int n,int exp) {
-    Wide m,a,v;int i,shift=0;int32_t val;
+    Wide m,a,v;int i,shift;int32_t val;
     wu(&m,0);
     for(i=0;i<n;i++){wmag(&a,&src[i]);if(wc(&a,&m)>0)m=a;}
     if(profiling)packs++;
     if(wz(&m)){memset(dst->v,0,(size_t)n*sizeof(dst->v[0]));dst->exp=0;if(profiling)zeros++;return;}
-    while(WHI(m)||WLO(m)>32767UL){unsigned odd=(unsigned)(WLO(m)&1UL);wr(&m,&m,1);if(odd)winc(&m);shift++;}
-    while(WLO(m)<=16383UL){wl(&m,&m,1);shift--;}
+    /* Match the old repeated ceiling shifts: ceil(m / 2^shift) <= 32767.
+     * topbit gives the candidate; only the upper boundary needs correction. */
+    shift=topbit(&m)-14;
+    if(shift>0){
+        wu(&a,32767UL);wl(&a,&a,shift);
+        if(wc(&m,&a)>0)shift++;
+    }
     dst->exp=exp+shift;
     for(i=0;i<n;i++){
         if(shift>=0)rshift(&v,&src[i],shift);else wl(&v,&src[i],-shift);
@@ -1301,7 +1306,7 @@ int main(void) {
 #if !defined(TINY_PRODOS_HOST_TEST)
     __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory"); // HOME
 #endif
-    puts("TINY v0.2 / Stage 11D");
+    puts("TINY v0.2 / Stage 11E");
     puts("Apple //e / LLVM-MOS / RamWorks");
 #ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)
