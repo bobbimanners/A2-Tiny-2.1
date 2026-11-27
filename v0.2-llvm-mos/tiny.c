@@ -702,7 +702,7 @@ static void matvec(const Table *t,const Vec *src,Vec *dst) {
     int r,m=q8(src->v,q,t->cols);int e=src->exp+t->exp;Wide a;
     for(r=0;r<t->rows;r++){
         rw_read(&t->data,r,0,rowbuf,(unsigned)t->cols+4u);
-        wi(&a,dot8((const int8_t *)(rowbuf+4),q,t->cols));wmi(&a,&a,signed32(get32(rowbuf)));wmu(&a,&a,(uint32_t)m);rdiv(&wide[r],&a,127);
+        wi(&a,dot8((const int8_t *)(rowbuf+4),q,t->cols));wmi(&a,&a,signed32(get32(rowbuf)));wmu(&a,&a,(uint32_t)m);rshift(&wide[r],&a,7);
     }
     pack(dst,wide,t->rows,e);
 }
@@ -1300,7 +1300,7 @@ int main(void) {
 #if !defined(TINY_PRODOS_HOST_TEST)
     __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory"); // HOME
 #endif
-    puts("TINY v0.2 / Stage 11B");
+    puts("TINY v0.2 / Stage 11C");
     puts("Apple //e / LLVM-MOS / RamWorks");
 #ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)
