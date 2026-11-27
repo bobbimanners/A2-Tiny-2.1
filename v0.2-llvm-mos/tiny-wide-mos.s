@@ -1,4 +1,4 @@
-; Stage 11P: LLVM-MOS Apple II 65C02 wide arithmetic.
+; Stage 12C: LLVM-MOS Apple II 65C02 wide arithmetic.
 ; ABI: pointer args in rc2/3, rc4/5, rc6/7; int args/returns A:X.
 ; Apple2 maps rc0..31 to $00..$1f. No callee-saved registers touched.
 ; D must be clear (normal C environment). No IRQ/reentrant use.
@@ -403,7 +403,14 @@ wm:
     bne .Louter_nonzero
     jmp .Lnextouter
 .Louter_nonzero:
-    sta MB
+    ; For unsigned bytes a,b, use Q[256+a+b]-Q[256+a-b].
+    ; b is nonzero. Patch four low address bytes once per outer row.
+    sta .Lmulsumlo+1
+    sta .Lmulsumhi+1
+    eor #$ff
+    inc a
+    sta .Lmuldifflo+1
+    sta .Lmuldiffhi+1
     ; Don't visit terms whose output index is >= 8.
     lda #8
     sec
@@ -417,45 +424,17 @@ wm:
 .Lmulinner:
     lda .La,y
     beq .Lnextinner
-    sta MA
-    ; Q[256+t] = floor(t*t/4), for 0 <= t <= 255.
-    ; s = a+b, t=s mod 256. For s>=256 add 128*t+16384.
-    clc
-    adc MB
     tax
-    bcs .Lsumcarry
+.Lmulsumlo:
     lda ql+256,x
-    sta MP
-    lda qh+256,x
-    bra .Lsumdone
-.Lsumcarry:
-    txa
-    lsr a
-    sta MT
-    lda #0
-    ror a               ; low byte of 128*t; carry now clear
-    adc ql+256,x
-    sta MP
-    lda qh+256,x
-    adc MT              ; high byte, including low-byte carry
-    adc #64             ; previous ADC cannot overflow (<=191)
-.Lsumdone:
-    sta MH
-    ; Subtract floor(abs(a-b)^2/4). Both squares have same parity.
-    lda MA
     sec
-    sbc MB
-    bcs .Ldiffpos
-    eor #$ff
-    inc a
-.Ldiffpos:
-    tax
-    lda MP
-    sec
-    sbc ql+256,x
+.Lmuldifflo:
+    sbc ql,x
     sta MP
-    lda MH
-    sbc qh+256,x
+.Lmulsumhi:
+    lda qh+256,x
+.Lmuldiffhi:
+    sbc qh,x
     sta MH
     ; Add the unsigned 16-bit product at byte offset MO+Y.
     tya

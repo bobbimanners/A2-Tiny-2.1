@@ -2,7 +2,7 @@ MOSCC ?= /opt/llvm-mos/bin/mos-apple2-clang
 HOSTCC ?= cc
 MOSFLAGS ?= -mcpu=mos65c02 -Oz -flto -fno-inline-functions -fno-unroll-loops
 # Keep these defaults for the memory-constrained native build.
-EXTRA ?= -DTINY_COMPACT_LUT
+EXTRA ?= -DTINY_COMPACT_LUT -DTINY_AUX0_LUT
 MACFLAGS = -mreserve-zp=6
 HOSTFLAGS ?= -std=c99 -O2 -Wall -Wextra
 MAIN = tiny.c tiny-wide-mos.s tiny-rw65.c tiny-rw65-mos.s tiny-mac65-mos.s tiny-qsquare-mos.s tiny-prodos.c tiny-prodos-asm.s
