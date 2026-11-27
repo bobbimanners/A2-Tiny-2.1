@@ -1,4 +1,4 @@
-; Stage 11G: LLVM-MOS Apple II 65C02 wide arithmetic.
+; Stage 11H: LLVM-MOS Apple II 65C02 wide arithmetic.
 ; ABI: pointer args in rc2/3, rc4/5, rc6/7; int args/returns A:X.
 ; Apple2 maps rc0..31 to $00..$1f. No callee-saved registers touched.
 ; D must be clear (normal C environment). No IRQ/reentrant use.
@@ -704,3 +704,121 @@ tiny_wrounddiv:
     bne .Lroundinc
 .Ldivout:
     jmp .Lstoreq
+
+; Convert signed Wide to a packed mantissa. R = input, A:X = shift.
+; Precondition: -14 <= shift <= 49, rounded result in [-32767,32767].
+; Positive shift: nearest, ties away from zero; negative: exact left shift.
+; Only the three magnitude bytes containing the rounding bit and result
+; need shifting. Negative inputs use the existing La workspace.
+; No source writes, no extra BSS or reserved ZP.
+.global tiny_pack16
+tiny_pack16:
+    cpx #0
+    beq .Lpknotleft
+    jmp .Lpkleft
+.Lpknotleft:
+    cmp #0
+    bne .Lpknonzero
+    jmp .Lpkzero
+.Lpknonzero:
+    dec a
+    pha
+    and #7
+    inc a
+    tax                 ; 1..8 right shifts, final carry is rounding bit
+    pla
+    lsr a
+    lsr a
+    lsr a
+    sta MT              ; first byte = (shift-1)/8
+    ldy #7
+    lda (R),y
+    sta .Lsign
+    bpl .Lpkpositive
+    ; Negate source into La, carrying across the low discarded bytes.
+    stx MB
+    ldx #8
+    ldy #0
+    sec
+.Lpkmag:
+    lda #0
+    sbc (R),y
+    sta .La,y
+    iny
+    dex
+    bne .Lpkmag
+    ldx MB
+    ldy MT
+    lda .La,y
+    sta MO
+    iny
+    lda .La,y
+    sta MP
+    iny
+    cpy #8
+    beq .Lpkhighzero
+    lda .La,y
+    bra .Lpkright
+.Lpkpositive:
+    ldy MT
+    lda (R),y
+    sta MO
+    iny
+    lda (R),y
+    sta MP
+    iny
+    cpy #8
+    beq .Lpkhighzero
+    lda (R),y
+    bra .Lpkright
+.Lpkhighzero:
+    lda #0
+.Lpkright:
+    lsr a
+    ror MP
+    ror MO
+    dex
+    bne .Lpkright
+    bcc .Lpknoround
+    inc MO
+    bne .Lpknoround
+    inc MP
+.Lpknoround:
+    bit .Lsign
+    bpl .Lpkreturn
+    sec
+    lda #0
+    sbc MO
+    tay
+    lda #0
+    sbc MP
+    tax
+    tya
+    rts
+.Lpkreturn:
+    lda MO
+    ldx MP
+    rts
+.Lpkzero:
+    ldy #1
+    lda (R),y
+    tax
+    dey
+    lda (R),y
+    rts
+.Lpkleft:
+    eor #$ff
+    inc a
+    tax
+    ldy #1
+    lda (R),y
+    sta MP
+    dey
+    lda (R),y
+.Lpkleftloop:
+    asl a
+    rol MP
+    dex
+    bne .Lpkleftloop
+    ldx MP
+    rts

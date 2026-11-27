@@ -24,6 +24,9 @@ void wm(Wide *,const Wide *,const Wide *);
 typedef struct { int32_t dot; uint16_t peak; } TinyRescaleArgs;
 _Static_assert(offsetof(TinyRescaleArgs, peak)==4, "rescale ABI layout");
 void tiny_rescale(Wide *,const uint8_t *,const TinyRescaleArgs *);
+/* Packing-only conversion. Shift in [-14,49], rounded result must fit
+ * [-32767,32767] (guaranteed by pack's peak calculation). */
+int16_t tiny_pack16(const Wide *,int shift);
 /* Nonzero unsigned divisor required; public C wrappers check this. */
 void tiny_wdiv(Wide *,const Wide *,const Wide *);
 void tiny_wrounddiv(Wide *,const Wide *,const Wide *);

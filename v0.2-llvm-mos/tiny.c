@@ -548,7 +548,12 @@ static void note(Vec *dst,int n,Peak *peak) {
 /* Pack wide integer values into a 16-bit vector; choose the finest common
  * binary exponent for which rounding does not exceed +/-32767. */
 static void pack(Vec *dst,const Wide *src,int n,int exp) {
-    Wide m,a,v;int i,shift;int32_t val;
+    Wide m,a;int i,shift;
+#if defined(TINY_MOS) && defined(TINY_WIDE_ASM)
+    int16_t val;
+#else
+    Wide v;int32_t val;
+#endif
     wu(&m,0);
     for(i=0;i<n;i++){wmag(&a,&src[i]);if(wc(&a,&m)>0)m=a;}
     if(profiling)packs++;
@@ -562,9 +567,14 @@ static void pack(Vec *dst,const Wide *src,int n,int exp) {
     }
     dst->exp=exp+shift;
     for(i=0;i<n;i++){
+#if defined(TINY_MOS) && defined(TINY_WIDE_ASM)
+        /* The peak calculation above guarantees -32767..32767. */
+        val=tiny_pack16(&src[i],shift);
+#else
         if(shift>=0)rshift(&v,&src[i],shift);else wl(&v,&src[i],-shift);
         val=wtoi(&v);
         if(val>32767L||val< -32767L){if(profiling)saturation++;die("fixed-point packing overflow");}
+#endif
         if(profiling&&!wz(&src[i])&&!val)rounded_zero++;
         dst->v[i]=(int16_t)val;
     }
@@ -1317,7 +1327,7 @@ int main(void) {
 #if !defined(TINY_PRODOS_HOST_TEST)
     __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory"); // HOME
 #endif
-    puts("TINY v0.2 / Stage 11G");
+    puts("TINY v0.2 / Stage 11H");
     puts("Apple //e / LLVM-MOS / RamWorks");
 #ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)
