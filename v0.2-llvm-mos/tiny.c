@@ -186,14 +186,19 @@ static void rw_addr(const Region *r,unsigned row,unsigned start,unsigned n,
 static void rw_select(unsigned bank) {
     if(bank!=rw_selected){rw_selected=bank;++rw_switches;}
 }
-static void rw_read(const Region *r,unsigned row,unsigned start,void *dst,unsigned n) {
-    unsigned bank,off;rw_addr(r,row,start,n,&bank,&off);rw_select(bank);
-    #ifdef TINY_APPLE2
+/* Transfer an already resolved address; both read paths keep the same stats. */
+static void rw_read_at(unsigned bank,unsigned off,void *dst,unsigned n) {
+    rw_select(bank);
+#ifdef TINY_APPLE2
     tiny_rw_read(bank,off,dst,n);
 #else
     memcpy(dst,&rw_mem[bank][off],n);
 #endif
     ++rw_reads;rw_read_bytes+=n;
+}
+static void rw_read(const Region *r,unsigned row,unsigned start,void *dst,unsigned n) {
+    unsigned bank,off;rw_addr(r,row,start,n,&bank,&off);
+    rw_read_at(bank,off,dst,n);
 }
 static void rw_write(const Region *r,unsigned row,unsigned start,const void *src,unsigned n) {
     unsigned bank,off;rw_addr(r,row,start,n,&bank,&off);rw_select(bank);
@@ -716,14 +721,20 @@ static void matvec(const Table *t,const Vec *src,Vec *dst) {
     int8_t *q=scratch.projection.matvec_q;
     /* Absorb the matrix rescaling divisor (128) into the exponent. */
     int r,m=q8(src->v,q,t->cols);int e=src->exp+t->exp-7;
+    unsigned bank=t->data.bank,off=t->data.off,n=t->data.stride;
+    unsigned last=RW_HI-n;
 #if defined(TINY_MOS) && defined(TINY_WIDE_ASM)
     TinyRescaleArgs args;
     args.peak=(uint16_t)m;
 #else
     Wide a;
 #endif
+    /* rw_alloc packs complete records consecutively, skipping only the
+     * unusable tail of a bank. Walk that layout without mul/div per row. */
     for(r=0;r<t->rows;r++){
-        rw_read(&t->data,r,0,rowbuf,(unsigned)t->cols+4u);
+        if(off>last){++bank;off=RW_LO;}
+        rw_read_at(bank,off,rowbuf,n);
+        off+=n;
 #if defined(TINY_MOS) && defined(TINY_WIDE_ASM)
         args.dot=dot8((const int8_t *)(rowbuf+4),q,t->cols);
         tiny_rescale(&wide[r],rowbuf,&args);
@@ -1331,7 +1342,7 @@ int main(void) {
 #if !defined(TINY_PRODOS_HOST_TEST)
     __asm__ volatile ("jsr $fc58" ::: "a", "x", "y", "p", "memory"); // HOME
 #endif
-    puts("TINY v0.2 / Stage 11I");
+    puts("TINY v0.2 / Stage 11J");
     puts("Apple //e / LLVM-MOS / RamWorks");
 #ifdef TINY_MOS
 #if !defined(TINY_PRODOS_HOST_TEST)
