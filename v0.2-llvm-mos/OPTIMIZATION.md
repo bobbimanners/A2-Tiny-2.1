@@ -13,7 +13,7 @@ The comparison starts at merged upstream `0538aa9`, which already includes the s
 
 The exact prompts were `WHAT IS THE CAPITAL OF FRANCE?` and `IS A WHALE A FISH`. Both builds answered `The capital of France is Paris.` and `No, a whale is a mammal.` respectively. Both used the same installed ROM set, for which MAME reports checksum differences on `341-0132-d.e12` and `sc01a.bin`.
 
-On November 28, the tester reported **10 s to the first character and 29 s total** for the France prompt on a physical Appletini running the runtime-kernel image (`f2ae9e5`). The previous eight-row hardware run took 12 s and 31 s respectively. At whole-second precision, both runs took 19 s from the first character to completion.
+On November 28, the tester reported **10 s to the first character and about 28 s total** for the France prompt on a physical Appletini running the runtime-kernel image (`f2ae9e5`). The previous eight-row hardware run took 12 s and 31 s respectively. The first character appeared 2 s sooner, and the full answer took about 3 s less (roughly 10%). The time after the first character fell from about 19 s to 18 s.
 
 Two intermediate builds isolate the rescaler and ReLU changes. All four stages produced the same France answer.
 
