@@ -23,6 +23,9 @@ void wm(Wide *,const Wide *,const Wide *);
  * coefficient, peak <= 32767. The coefficient is little-endian. */
 typedef struct { int32_t dot; uint16_t peak; } TinyRescaleArgs;
 _Static_assert(offsetof(TinyRescaleArgs, peak)==4, "rescale ABI layout");
+/* Initialize before scalar, batched or F1 rescaling. The 1 KiB buffer
+ * must stay executable in main RAM until the last rescale call. */
+void tiny_rescale_init(void *);
 void tiny_rescale(Wide *,const uint8_t *,const TinyRescaleArgs *);
 /* Packing-only conversion. Shift in [-14,49], rounded result must fit
  * [-32767,32767] (guaranteed by pack's peak calculation). */
@@ -30,6 +33,8 @@ int16_t tiny_pack16(const Wide *,int shift);
 /* Exact round(127*a/b), or zero if b==0. Attention alignment
  * guarantees 0 <= a <= b <= 2^41. Return range 0..127. */
 int tiny_attention_coeff(const Wide *a,const Wide *b);
+/* Same rounding for 1..128 scores with a shared maximum. */
+void tiny_attention_coeffs(const Wide *scores,const Wide *maximum,int8_t *out,uint8_t count);
 /* Quantize n=1..256 packed mantissas with nonzero peak <=32767.
  * args[0]=n, args[1]=peak; each abs(input[i])<=peak. No overlap. */
 void tiny_q8_vector(const int16_t *,int8_t *,const uint16_t *);
@@ -41,6 +46,10 @@ _Static_assert(offsetof(TinyScoreArgs, factor)==8 && offsetof(TinyScoreArgs, top
 int tiny_att_score(Wide *,TinyScoreArgs *);
 /* Rescale count kernel results: eight-byte records {scale, dot}; args = {count, peak}. */
 void tiny_rescale_rows(Wide *,const uint8_t *,const uint16_t *);
+/* Bracket the F1 row batches at a single peak. Finish restores the most
+ * negative product for pack's exponent, before ReLU clears that lane. */
+void tiny_f1_begin(void);
+void tiny_f1_finish(void);
 /* Largest magnitude of n >= 1 signed values. */
 void tiny_wmaxmag(Wide *,const Wide *,unsigned n);
 /* Pack args[0] >= 1 values with shift args[1]; see tiny_pack16. */

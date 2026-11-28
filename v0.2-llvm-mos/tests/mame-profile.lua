@@ -5,16 +5,19 @@
 -- Writes stacks.txt, pcs.txt and series.txt there.
 -- TINY_QUESTION overrides the question. TINY_CHECK=1 types :check first and
 -- prints the position,token,exponent,hash rows instead of timing an answer.
+-- TINY_TIMING=1 times inference without sampling or requiring a symbol map.
 -- TINY_WM_LO=<hex> measures the soft-stack high-water mark above that address.
-local syms = dofile("syms.lua")
-local nsyms = #syms
 local question = os.getenv("TINY_QUESTION") or "WHAT IS THE CAPITAL OF FRANCE?"
 local check = os.getenv("TINY_CHECK") == "1"
+local profile = not check and os.getenv("TINY_TIMING") ~= "1"
+local syms = profile and dofile("syms.lua") or {}
+local nsyms = #syms
 local wm_lo = tonumber(os.getenv("TINY_WM_LO") or "", 16)
 
 local phase = "load"
 local finished = false
 local t_ready = nil
+local first_visible = false
 local snap = nil                          -- code snapshot for JSR validation
 local stacks = {}                         -- phase|folded stack -> count
 local pcs = {}                            -- infer-phase PC -> count
@@ -127,7 +130,7 @@ local function finish(m, space, t, screen)
         while a < 0xBF00 and space:read_u8(a) == 0xA5 do a = a + 1 end
         print(("lowest touched address %04X: soft stack used at most %d bytes"):format(a, 0xBF00 - a))
     end
-    dump()
+    if profile then dump() end
     m:exit()
 end
 
@@ -137,7 +140,7 @@ emu.register_periodic(function()
     local cpu = m.devices[":maincpu"]
     local space = cpu.spaces["program"]
     local t = m.time:as_double()
-    sample(cpu, space, t)
+    if profile then sample(cpu, space, t) end
     if t < 1 or t < last_poll + 0.5 then return end
     last_poll = t
     local screen = text_page(space)
@@ -150,8 +153,10 @@ emu.register_periodic(function()
     end
     if phase == "load" then
         if screen:find("\n>", 1, true) and screen:find("toggles hash trace", 1, true) then
-            snap = {}
-            for a = 0x2000, 0xBFFF do snap[a] = space:read_u8(a) end
+            if profile then
+                snap = {}
+                for a = 0x2000, 0xBFFF do snap[a] = space:read_u8(a) end
+            end
             t_ready = t
             print(("READY at %.1f s"):format(t))
             if check then
@@ -174,7 +179,15 @@ emu.register_periodic(function()
             if p and not rows[tonumber(p)] then rows[tonumber(p)] = line; nrows = nrows + 1 end
         end
         if rows[#question] or screen:find("TINY: ", 1, true) then finish(m, space, t, screen) end
-    elseif screen:find(" characters]", 1, true) or screen:find("TINY: ", 1, true) then
-        finish(m, space, t, screen)
+    else
+        -- The progress dots wrap at column 40 on long prompts.
+        local dots, answer = screen:match("Thinking%.%.%.\n([%.\n]+)\n(%S)")
+        if not first_visible and dots and #dots:gsub("\n", "") == #question + 1 and answer ~= "[" then
+            first_visible = true
+            print(("FIRST visible answer at %.1f s; elapsed %.1f s"):format(t, t - t_ready))
+        end
+        if screen:find(" characters]", 1, true) or screen:find("TINY: ", 1, true) then
+            finish(m, space, t, screen)
+        end
     end
 end)

@@ -115,7 +115,7 @@ These kernels handle the projections, feed-forward layers, query-key attention a
 
 The Apple II's 16-bit address space is much smaller than the model. Rather than treating auxiliary memory as a flat address space, TINY stores data in fixed-size records with explicit bank and offset addressing. Records never straddle bank boundaries.
 
-The current implementation uses banks 1 through 12, reserving bank 0 for the usual Apple II auxiliary-memory environment. Only addresses `$2000` through `$BFFF` are used in each expansion bank, providing a 40 KiB data window per bank.
+The v0.1 implementation uses banks 1 through 12, reserving bank 0 for the usual Apple II auxiliary-memory environment. Only addresses `$2000` through `$BFFF` are used in each expansion bank, providing a 40 KiB data window per bank. Its allocation is shown below.
 
 | Auxiliary memory allocation | Bytes |
 | --- | ---: |
@@ -125,25 +125,25 @@ The current implementation uses banks 1 through 12, reserving bank 0 for the usu
 | Bank-boundary padding | 864 |
 | **Total allocated** | **485,060** |
 
-The inference engine, working vectors, staging buffers, lookup tables and C stack reside in main memory. Matrix rows and relevant attention-cache segments are copied to a main-memory buffer for computation.
+In v0.1 the inference engine, working vectors, staging buffers, lookup tables and C stack reside in main memory. Matrix rows and relevant attention-cache segments are copied to a main-memory buffer for computation.
 
-Native memory transfers use the Apple //e firmware's `AUXMOVE` routine at `$C311`, with RamWorks bank selection at `$C073`. The assembly wrapper preserves the firmware's temporary zero-page workspace, masks interrupts during transfers, and restores main-memory access and auxiliary bank 0 before returning to C. In v0.1 the MAC routines borrow cc65's existing scratch pointers; in v0.2 they have dedicated zero-page pointers managed alongside LLVM-MOS's zero-page allocation.
+The v0.1 transfers use the Apple //e firmware's `AUXMOVE` routine at `$C311`, with RamWorks bank selection at `$C073`. The v0.2 kernels access records directly in `$4000–$BFFF` in banks 1 through 15. They keep the matrix row sums in main zero page and restore the bank mapping before returning to C. The exponential table and its interpolation routine borrow space in auxiliary bank 0, backed up in bank 15 until exit.
 
 ### LLVM-MOS arithmetic and workspace (v0.2)
 
 The wide arithmetic library implements 64-bit addition, subtraction, comparisons, shifts, multiplication and division directly in 65C02 assembly. It uses the LLVM-MOS calling convention, passing operand pointers in zero-page register pairs. Rounded division reuses the remainder produced by the division routine rather than reconstructing it with a multiplication. A specialized single-byte divisor path handles common scaling operations, including division by 127.
 
-The v0.2 build also shares vector buffers and overlays scratch storage whose lifetimes do not overlap. A low-memory arena at `$1000–$1FFF` holds the main mathematical scratch workspace. This allows the application to fit without reducing the model dimensions, shrinking the context window or using auxiliary bank 0 for inference code.
+The v0.2 build shares vector buffers and overlays scratch storage whose lifetimes do not overlap. After the model file closes, the program claims the read-ahead pages and generates the two straight-line multiplication kernels used for matrix rescaling.
 
 | Main-memory range | v0.2 use |
 | --- | --- |
 | `$0000–$001F` | LLVM-MOS imaginary registers |
 | `$0060–$00FF` | Compiler-managed zero page and MAC pointers |
 | `$0800–$0BFF` | ProDOS file buffer |
-| `$0C00–$0FFF` | Model read-ahead buffer |
+| `$0C00–$0FFF` | Model read-ahead buffer during loading, executable rescaler during inference |
 | `$1000–$1FFF` | Shared inference scratch arena |
-| `$2000–$AEFF` | Linked executable and static data (maximum) |
-| `$AF00–$BEFF` | Reserved software stack |
+| `$2000–$BAFF` | Linked code and static data. The SYS load image ends by `$AEFF` |
+| `$BB00–$BEFF` | Reserved software stack |
 
 The LLVM-MOS version uses a small buffered read-only file interface to ProDOS's Machine Language Interface (MLI). The native assembly wrappers preserve the required compiler and firmware workspace when making system calls.
 
@@ -182,13 +182,13 @@ This approach made it possible to distinguish arithmetic errors from compiler, a
 ### Requirements
 
 - Enhanced Apple //e with a 65C02, or a compatible emulator such as MAME (`apple2ee`).
-- RamWorks-compatible expansion providing at least 13 distinct 64 KiB auxiliary banks (bank 0 plus banks 1–12). A 1 MiB or larger card provides sufficient capacity.
+- RamWorks-compatible expansion providing 16 distinct 64 KiB auxiliary banks for v0.2 (bank 0 plus banks 1–15). A 1 MiB or larger card provides sufficient capacity.
 - ProDOS 8 and a volume with enough free space for the chosen executable, its loader if required, and the approximately 373 KiB model file. ProDOS 2.4 or later with Bitsy Bye is recommended for launching v0.2.
 - A modern build host with GNU Make, Python 3 and a consistent installation of the [cc65 toolchain](https://cc65.github.io/). These are required to build v0.1 and generate the shared model.
 - The [LLVM-MOS SDK](https://github.com/llvm-mos/llvm-mos-sdk) with its Apple II target, for building v0.2.
 - A means of transferring ProDOS files, such as [Cadius](https://github.com/mach-kernel/cadius).
 
-**Warning:** TINY reserves and overwrites data in auxiliary banks 1–12. Do not run it while a RamWorks RAM disk or other application is using these banks. Save your work first. A startup probe checks for aliased or missing banks.
+**Warning:** TINY reserves and overwrites data in auxiliary banks 1–12 for v0.1 and 1–15 for v0.2. Do not run it while a RamWorks RAM disk or other application is using these banks. Save your work first. A startup probe checks for aliased or missing banks.
 
 ### 1. Build both versions
 
@@ -320,7 +320,7 @@ The initial LLVM-MOS build was too large to fit. Even with size-oriented optimiz
 
 A preliminary A/B comparison of v0.1 and v0.2 in two unthrottled MAME instances showed **roughly three times the throughput** for v0.2, judged by the rate of progress dots. This is an order-of-magnitude observation rather than a controlled emulated-cycle benchmark. The improvement reflects both the compiler change and the new assembly arithmetic; it cannot be attributed to LLVM-MOS alone.
 
-This is still not a fast implementation. It is a *working* implementation. Reproducible cycles-per-token measurements, a new v0.2 profile and a quantified tokens-per-second benchmark on physical hardware remain to be done.
+Controlled v0.2 emulator timings, per-kernel experiments, and accelerator measurements for the preceding build are recorded in the [optimization notes](v0.2-llvm-mos/OPTIMIZATION.md).
 
 Possible future work:
 
@@ -336,7 +336,7 @@ Possible future work:
 
 **v0.2 (LLVM-MOS):** The new assembly wide arithmetic test passed in MAME. The complete executable fits in the standard LLVM-MOS memory layout, launches through Bitsy Bye and processes input considerably faster than v0.1 in a preliminary side-by-side test. Both versions retain the same model format and architecture.
 
-The versions are maintained in parallel. A complete recorded comparison of native v0.2 logit checksums against v0.1 and the Linux reference, controlled performance measurements and verification on physical hardware remain future work.
+The versions are maintained in parallel. The runtime-kernel build has been checked against the portable reference in MAME. Its physical Appletini timing is pending.
 
 ## Acknowledgements and licensing
 

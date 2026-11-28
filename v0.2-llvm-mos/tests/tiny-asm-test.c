@@ -1,11 +1,11 @@
 /* Unit tests for the assembly kernels, run in the LLVM-MOS simulator.
  * Each routine is compared with plain C arithmetic on 64-bit integers.
  * Build and run from the v0.2 directory:
- *   mos-sim-clang -mcpu=mos65c02 -Os -mreserve-zp=30 -Wa,--defsym,TINY_MAC_GENERAL=1 -I. tests/tiny-asm-test.c \
+ *   mos-sim-clang -mcpu=mos65c02 -Os -mreserve-zp=30 -Wa,--defsym,TINY_MAC_GENERAL=1 -Wa,--defsym,TINY_MAC_SIM=1 -I. tests/tiny-asm-test.c \
  *     tiny-wide-mos.s tiny-mac65-mos.s tiny-qsquare-mos.s -o asm-test.sim
  *   mos-sim --cmos asm-test.sim
- * The simulator has flat memory, so the soft switches written by the
- * auxiliary-memory entry points are ordinary RAM and select nothing. */
+ * The simulator has flat memory. TINY_MAC_SIM directs the Apple II
+ * soft-switch accesses to a private buffer in that memory. */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -235,7 +235,7 @@ static void test_rows(void) {
                         for (j = 0; j < n; j++) {
                             int8_t w = (int8_t)(rnd() >> 24);
                             if (k == 2) w = (r & 1) ? -128 : 127;
-                            rec[4 + j] = w;
+                            rec[4 + j] = (int8_t)((uint8_t)w ^ 0x80u);
                             want[r] += (int32_t)act[j] * (int32_t)w;
                         }
                     }
@@ -273,7 +273,7 @@ static void test_axpy(void) {
             for (i = 0; i < 24; i++) {
                 int8_t v = (int8_t)(rnd() >> 24);
                 if (k == 1) v = (i & 1) ? -128 : 127;
-                values[t][i] = v;
+                values[t][i] = (int8_t)((uint8_t)v ^ 0x80u);
                 want[i] += (int32_t)c * (int32_t)v;
             }
             tiny_mac_a = values[t]; tiny_mac_rows = 5; tiny_mac_coeff = c;
@@ -349,6 +349,45 @@ static void test_batches(void) {
     }
 }
 
+/* F1 discards negative lanes but must preserve the exponent originally
+ * selected by pack. Check both signs, ties and the winning row across calls. */
+static void test_f1(void) {
+    static uint8_t records[16][8];
+    static Wide results[16];
+    static int64_t expected[16];
+    unsigned trial, i, winner;
+    uint16_t args[2] = {8, 0};
+    for (trial = 0; trial < 36; ++trial) {
+        int64_t minimum = 0;
+        winner = 16;
+        args[1] = trial == 0 ? 0 : trial == 1 ? 32767 : (uint16_t)(1 + rnd() % 32767);
+        for (i = 0; i < 16; ++i) {
+            uint32_t scale = rnd() % 8388609UL;
+            int32_t dot = (int32_t)(rnd() % 8388608UL);
+            if (trial % 3 == 1 || (trial % 3 == 2 && (i & 1))) dot = -dot;
+            if (trial == 1 && (i == 8 || i == 10)) {
+                dot = -8388608L;
+                scale = 8388608UL;
+            }
+            memcpy(records[i], &scale, 4);
+            memcpy(records[i]+4, &dot, 4);
+            expected[i] = (int64_t)dot * scale * args[1];
+            if (expected[i] < minimum) { minimum = expected[i]; winner = i; }
+        }
+        tiny_f1_begin();
+        tiny_rescale_rows(results, records[0], args);
+        tiny_rescale_rows(results+8, records[8], args);
+        tiny_f1_finish();
+        for (i = 0; i < 16; ++i) {
+            uint64_t want = expected[i] >= 0 || i == winner ? (uint64_t)expected[i] : 0;
+            expect("F1 ReLU rows", u64(&results[i]), want, (long)(16*trial+i));
+        }
+        tiny_rescale_rows(results, records[0], args);
+        for (i = 0; i < 8; ++i)
+            expect("F1 mode restored", u64(&results[i]), (uint64_t)expected[i], (long)(16*trial+i));
+    }
+}
+
 static Wide wides[258];
 static int16_t packed[258], va[98], vb[98];
 static uint64_t mag64(uint64_t v) { return (v >> 63) ? 0 - v : v; }
@@ -413,6 +452,10 @@ static void test_pack_residual(void) {
 }
 
 int main(void) {
+    static uint8_t rescale_code[1026];
+    rescale_code[0] = rescale_code[1025] = 0xa5;
+    tiny_rescale_init(rescale_code + 1);
+    expect("rescale code guard", rescale_code[0] == 0xa5 && rescale_code[1025] == 0xa5, 1, 0);
     tiny_mac65_init();
     test_wm();        printf("wm: %lu checks\n", checks);
     test_rescale();   printf("rescale: %lu checks\n", checks);
@@ -422,6 +465,7 @@ int main(void) {
     test_rows();      printf("rows: %lu checks\n", checks);
     test_axpy();      printf("axpy: %lu checks\n", checks);
     test_batches();   printf("batches: %lu checks\n", checks);
+    test_f1();        printf("F1: %lu checks\n", checks);
     test_pack_residual(); printf("pack/residual: %lu checks\n", checks);
     if (fails) { printf("FAILED: %lu of %lu\n", fails, checks); return 1; }
     printf("PASS: %lu checks\n", checks);

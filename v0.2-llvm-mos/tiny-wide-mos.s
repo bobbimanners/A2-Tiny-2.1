@@ -738,26 +738,195 @@ tiny_rescale:
     lda #0
     sbc .La+2
     sta .La+2
+.Lnegative_rescale:
+    jmp .Lrspositive        ; selected once per projection by tiny_f1_begin/finish
 .Lrspositive:
-    jsr .Lclearq
-    ldy #2
-    ldx #2
-    jsr .Lmul_unsigned
-    ldy #5
-.Lrscopy:
-    lda .Lq,y
-    sta .La,y
-    dey
-    bpl .Lrscopy
-    lda .Lpeak
-    sta .Lb
-    lda .Lpeak+1
-    sta .Lb+1
-    jsr .Lclearq
-    ldy #5
-    ldx #1
-    jsr .Lmul_unsigned
+    jsr .Lrsfirst
+    jsr .Lrssecond
     jmp .Lsignedout
+
+; Each JSR target is installed once after the model file closes.
+; The six pack arguments are idle for the duration of matrix rescaling.
+rs_product = .Lpkargs
+.Lrsfirst:
+    jmp $ffff               ; .La[3] * .Lb[3] -> rs_product[6]
+.Lrssecond:
+    jmp $ffff               ; rs_product[6] * .Lpeak[2] -> .Lq[8]
+
+; Generate both fixed-size, straight-line schoolbook products. R points to
+; writable main memory, with 1 KiB available. Constants and operand addresses
+; are obtained from the final link. No code is changed in the inference loop.
+; Both stages set their own table pointers so either can be called alone.
+.global tiny_rescale_init
+rs_left = $06
+rs_right = $08
+rs_out = $0a
+rs_n = $0c
+rs_m = $0d
+rs_i = $0e
+rs_j = $0f
+
+.macro rs_copy first,last
+    ldy #(\first-.Lrs_templates)
+    ldx #(\last-\first)
+    jsr .Lrs_stamp
+.endm
+
+tiny_rescale_init:
+    lda $02
+    sta .Lrsfirst+1
+    lda $03
+    sta .Lrsfirst+2
+    ldx #0
+    jsr .Lrs_generate
+    lda $02
+    sta .Lrssecond+1
+    lda $03
+    sta .Lrssecond+2
+    ldx #8
+.Lrs_generate:
+    ldy #0
+.Lrs_arguments:
+    lda .Lrs_shapes,x
+    sta rs_left,y
+    inx
+    iny
+    cpy #8
+    bne .Lrs_arguments
+    rs_copy .Lrs_tables,.Lrs_rightpage
+    stz rs_j
+.Lrs_outer:
+    rs_copy .Lrs_rightpage,.Lrs_rightaddr
+    lda rs_j
+    ldx #2
+    jsr .Lrs_address
+    rs_copy .Lrs_ptrs,.Lrs_input
+    stz rs_i
+.Lrs_inner:
+    lda #$ac                ; LDY absolute
+    jsr .Lrs_byte
+    lda rs_i
+    ldx #0
+    jsr .Lrs_address
+    rs_copy .Lrs_input,.Lrs_addcarry
+    lda rs_i
+    beq .Lrs_firstdigit
+    rs_copy .Lrs_addcarry,.Lrs_adjust
+    lda rs_j
+    beq .Lrs_store
+    rs_copy .Lrs_adjust,.Lrs_sum
+    bra .Lrs_accumulate
+.Lrs_firstdigit:
+    lda rs_j
+    beq .Lrs_store
+    lda #$18                ; CLC before adding a previous partial sum
+    jsr .Lrs_byte
+.Lrs_accumulate:
+    lda #$6d                ; ADC absolute
+    jsr .Lrs_outoperand
+.Lrs_store:
+    lda #$8d                ; STA absolute
+    jsr .Lrs_outoperand
+    lda #$98                ; TYA (high product byte)
+    jsr .Lrs_byte
+    lda rs_i
+    ora rs_j
+    beq .Lrs_carry
+    rs_copy .Lrs_sum,.Lrs_newcarry
+.Lrs_carry:
+    inc rs_i
+    lda rs_i
+    cmp rs_n
+    beq .Lrs_lastdigit
+    rs_copy .Lrs_newcarry,.Lrs_endtemplate
+    bra .Lrs_inner
+.Lrs_lastdigit:
+    lda #$8d                ; final carry becomes the next result byte
+    jsr .Lrs_outoperand
+    inc rs_j
+    lda rs_j
+    cmp rs_m
+    beq .Lrs_done
+    jmp .Lrs_outer
+.Lrs_done:
+    lda #$60                ; RTS
+    bra .Lrs_byte
+.Lrs_outoperand:
+    jsr .Lrs_byte
+    lda rs_i
+    clc
+    adc rs_j
+    ldx #4
+.Lrs_address:
+    clc
+    adc rs_left,x
+    jsr .Lrs_byte
+    lda rs_left+1,x
+    adc #0
+.Lrs_byte:
+    sta (R)
+    inc $02
+    bne .Lrs_return
+    inc $03
+.Lrs_return:
+    rts
+.Lrs_stamp:
+    lda .Lrs_templates,y
+    jsr .Lrs_byte
+    iny
+    dex
+    bne .Lrs_stamp
+    rts
+.Lrs_shapes:
+    .word .La,.Lb,rs_product
+    .byte 3,3
+    .word rs_product,.Lpeak,.Lq
+    .byte 6,2
+.Lrs_templates:
+.Lrs_tables:
+    lda #>(ql+256)
+    sta $09
+    lda #>(qh+256)
+    sta $0d
+.Lrs_rightpage:
+    ldx #>ql
+    ldy #>qh
+    .byte $ad               ; LDA absolute, followed by right operand address
+.Lrs_rightaddr:
+.Lrs_ptrs:
+    sta $08
+    sta $0c
+    eor #$ff
+    inc a
+    sta $0a
+    sta $0e
+    bne 1f
+    inx                     ; when right=0 the negative offset is 256
+    iny
+1:  stx $0b
+    sty $0f
+.Lrs_input:
+    sec
+    lda ($08),y
+    sbc ($0a),y
+    sta $11
+    lda ($0c),y
+    sbc ($0e),y
+    tay
+    lda $11
+.Lrs_addcarry:
+    clc
+    adc $10
+.Lrs_adjust:
+    bcc 2f
+    iny
+    clc
+2:
+.Lrs_sum:
+    adc #0
+.Lrs_newcarry:
+    sta $10
+.Lrs_endtemplate:
 ; Rescale a batch of kernel results. R = Wide outputs, P = eight-byte
 ; records (three scale bytes and a spare, then the dot as int32),
 ; B = uint16 args[2] {count 1..255, peak}.
@@ -1391,24 +1560,76 @@ tiny_residual_rows:
 ; q=127, rem=b; the correction gives rem=0, so no special case.
 ; Six-byte remainder in caller-saved $08..$0d; denominator in Lb.
 ; No new BSS, no extra reserved zero page; inputs are untouched.
-.global tiny_attention_coeff
+.global tiny_attention_coeff, tiny_attention_coeffs
 tiny_attention_coeff:
-    ldy #5
-    ldx #5
+    jsr .Lacdenom
+    beq .Lacscalarzero
+    jsr .Lacone
+.Lacscalarzero:
+    ldx #0
+    rts
+
+; R = input scores, P = shared maximum, B = signed byte output, A = 1..128.
+tiny_attention_coeffs:
+    sta .Ln
+    jsr .Lacdenom
+.Lacrow:
+    jsr .Lacone
+    sta (B)
+    clc
+    lda $02                 ; R
+    adc #8
+    sta $02
+    bcc .Lacnextout
+    inc $03
+.Lacnextout:
+    inc B
+    bne .Lacnextrow
+    inc B+1
+.Lacnextrow:
+    dec .Ln
+    bne .Lacrow
+    rts
+.Lacdenom:
+    stz .Lb+6
     lda #0
-    sta MLA
+    ldy #5
+    tax
+.Laccopyden:
+    lda (P),y
+    sta .Lb,y
+    ; Return Z when b is zero for the single-coefficient entry point.
+    beq .Lacdennext
+    tax
+.Lacdennext:
+    dey
+    bpl .Laccopyden
+    txa
+    rts
+.Lacone:
+    ; .Lb+1..+6 is floor(b/256). At or below that cutoff 127*a/b
+    ; is strictly below a half, including a zero score. If b=0 all
+    ; scores in a valid batch are zero. Equality can return zero.
+    ldy #5
+.Laccutoff:
+    lda (R),y
+    cmp .Lb+1,y
+    bcc .Laczero
+    bne .Lacdivide
+    dey
+    bpl .Laccutoff
+.Laczero:
+    lda #0
+    rts
+.Lacdivide:
+    ldx #5
+    ldy #5
 .Lacload:
     lda (R),y
     sta MO,x
-    lda (P),y
-    sta .Lb,y
-    ora MLA
-    sta MLA
     dex
     dey
     bpl .Lacload
-    lda MLA
-    beq .Laczero
     stz MLA
     lda #7
     sta MLB
@@ -1462,11 +1683,6 @@ tiny_attention_coeff:
     jsr .Laccmp
     lda MLA
     adc #0              ; carry from compare: round half up
-    ldx #0
-    rts
-.Laczero:
-    lda #0
-    tax
     rts
 .Lacdouble:
     asl MO
@@ -1527,6 +1743,8 @@ tiny_q8_vector:
     sta MA
     lda MP
     sta MB
+    ora MO              ; a literal zero (common after ReLU) quantizes to zero
+    beq .Lq8store
     lda #2              ; sentinel: shifts out after seven quotient bits
     sta MLA
 .Lq8div:
@@ -1671,3 +1889,105 @@ tiny_q8_vector:
     lda MB
     sta .La+3
     jmp .Ldivfinish
+
+; F1 is always followed by ReLU. The pack exponent depends on the largest
+; magnitude of either sign. Retain all positive outputs and the single
+; largest negative output across batches; every other negative becomes zero.
+; The input peak is shared over the projection, so compare |dot|*row_scale
+; before the peak multiply. With row_scale <= 2^23, a dot no larger than
+; (largest_negative_product >> 23) cannot displace the current winner.
+.section .bss,"aw",@nobits
+.Lf1max:    .space 6
+.Lf1bound:  .space 3
+.Lf1winner: .space 2
+.section .text,"ax",@progbits
+.global tiny_f1_begin, tiny_f1_finish
+tiny_f1_begin:
+    lda #0
+    ldx #10
+.Lf1reset:
+    sta .Lf1max,x
+    dex
+    bpl .Lf1reset
+    lda #<.Lf1negative
+    sta .Lnegative_rescale+1
+    lda #>.Lf1negative
+    sta .Lnegative_rescale+2
+    rts
+
+.Lf1negative:
+    ldx #2
+.Lf1checkbound:
+    lda .La,x
+    cmp .Lf1bound,x
+    bcc .Lf1zero
+    bne .Lf1candidate
+    dex
+    bpl .Lf1checkbound
+    bra .Lf1zero
+.Lf1candidate:
+    jsr .Lrsfirst
+    ldx #5
+.Lf1compare:
+    lda rs_product,x
+    cmp .Lf1max,x
+    bcc .Lf1zero
+    bne .Lf1larger
+    dex
+    bpl .Lf1compare
+    bra .Lf1zero
+.Lf1larger:
+    ; Higher bytes already compare equal. Copy the differing byte and below.
+    sta .Lf1max,x
+    dex
+    bmi .Lf1threshold
+    lda rs_product,x
+    bra .Lf1larger
+.Lf1threshold:
+    lda .Lf1max+2
+    asl a
+    ldx #0
+    ldy #3
+.Lf1boundbyte:
+    lda .Lf1max+3,x
+    rol a
+    sta .Lf1bound,x
+    inx
+    dey                     ; preserve carry for the next ROL
+    bne .Lf1boundbyte
+    lda $02                 ; R
+    sta .Lf1winner
+    lda $03
+    sta .Lf1winner+1
+.Lf1zero:
+    lda #0
+    ldy #7
+.Lf1clear:
+    sta (R),y
+    dey
+    bpl .Lf1clear
+    rts
+
+tiny_f1_finish:
+    lda #<.Lrspositive
+    sta .Lnegative_rescale+1
+    lda #>.Lrspositive
+    sta .Lnegative_rescale+2
+    lda .Lf1winner
+    sta $02                 ; R
+    ora .Lf1winner+1
+    beq .Lf1done
+    lda .Lf1winner+1
+    sta $03
+    ldx #5
+.Lf1restore:
+    lda .Lf1max,x
+    sta rs_product,x
+    dex
+    bpl .Lf1restore
+    jsr .Lrssecond
+    lda #$80
+    sta .Lsign
+    jmp .Lsignedout
+.Lf1done:
+    rts

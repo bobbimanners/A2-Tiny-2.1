@@ -21,6 +21,27 @@
 TINY_SINGLE_BODY = 1
 .endif
 
+; The flat simulator can link test data at $C000. Give its switches a
+; private address range so that bank-selection writes cannot alter a test.
+.ifdef TINY_MAC_SIM
+.section .bss,"aw",@nobits
+SWITCHES: .space $74
+.else
+SWITCHES = $c000
+.endif
+RDSTORE = SWITCHES+$18
+PAGE1 = SWITCHES+$54
+PAGE2 = SWITCHES+$55
+LORES = SWITCHES+$56
+HIRES = SWITCHES+$57
+RAMWORKS = SWITCHES+$73
+RDPAGE2 = SWITCHES+$1c
+RDHIRES = SWITCHES+$1d
+STOREON = SWITCHES+$01
+RDAUX = SWITCHES+$03
+RDMAIN = SWITCHES+$02
+STOREOFF = SWITCHES+$00
+
 ; Private zero page, reserved by -mreserve-zp=30.
 .section .zp.bss,"aw",@nobits
 ap: .space 2
@@ -417,15 +438,15 @@ tiny_mac65_aux_dot:
     php
     sei
     cld
-    lda $C01C
+    lda RDPAGE2
     pha
-    lda $C01D
+    lda RDHIRES
     pha
-    lda $C018
+    lda RDSTORE
     pha
-    sta $C054
-    sta $C057
-    sta $C001
+    sta PAGE1
+    sta HIRES
+    sta STOREON
     lda tiny_mac_a
     sta ap
     clc
@@ -440,8 +461,8 @@ tiny_mac65_aux_dot:
     lda tiny_mac_b+1
     sta bp+1
     lda tiny_mac_coeff
-    sta $C073
-    sta $C003
+    sta RAMWORKS
+    sta RDAUX
     ldy #3
 .Laux_scale:
     lda (ap),y
@@ -449,19 +470,19 @@ tiny_mac65_aux_dot:
     dey
     bpl .Laux_scale
     jsr .Lprepared_body
-    sta $C002
-    stz $C073
+    sta RDMAIN
+    stz RAMWORKS
     pla
     bmi .Laux_storeok
-    sta $C000
+    sta STOREOFF
 .Laux_storeok:
     pla
     bmi .Laux_hiresok
-    sta $C056
+    sta LORES
 .Laux_hiresok:
     pla
     bpl .Laux_pageok
-    sta $C055
+    sta PAGE2
 .Laux_pageok:
     jsr .Lprepared_done
     plp
@@ -474,7 +495,8 @@ tiny_mac65_aux_dot:
 ; pointers and each row keeps its running sum in zero page, so the loop
 ; writes nothing into the window.
 ;
-; tiny_mac_a = first record in auxiliary memory (four scale bytes, weights),
+; tiny_mac_a = first record in auxiliary memory (four scale bytes, then
+; weights stored as signed value + 128),
 ; tiny_mac_coeff = bank, tiny_mac_rows = 1..8, tiny_mac_stride = bytes from
 ; one record to the next, tiny_mac_b = main-memory output, eight bytes per
 ; row: the four bytes ahead of the weights, then the dot as int32.
@@ -491,9 +513,7 @@ rrows = $10
 .macro MACROW r
 .Lrow\r:
 .Lroww\r:
-    lda $ffff,x
-    eor #$80
-    tay
+    ldy $ffff,x             ; bank stores weight + 128
     sec
     lda (tp1),y
     sbc (tm1),y
@@ -517,15 +537,15 @@ tiny_mac65_aux_rows:
     php
     sei
     cld
-    lda $C01C
+    lda RDPAGE2
     pha
-    lda $C01D
+    lda RDHIRES
     pha
-    lda $C018
+    lda RDSTORE
     pha
-    sta $C054
-    sta $C057
-    sta $C001
+    sta PAGE1
+    sta HIRES
+    sta STOREON
     ; Everything read from here on is zero page or inside the window.
     lda tiny_mac_stride
     sta rstride
@@ -594,8 +614,8 @@ tiny_mac65_aux_rows:
     lda .Lrows_entry-1,x
     sta .Lrows_jmp+2
     lda tiny_mac_coeff
-    sta $C073
-    sta $C003
+    sta RAMWORKS
+    sta RDAUX
 .ifdef TINY_SINGLE_ROW
 .Lrows_again:
     ; Row 0 takes the next record: weights at ap+4, sum cleared.
@@ -701,19 +721,19 @@ tiny_mac65_aux_rows:
     cpx rrows
     bne .Lrows_out
 .endif
-    sta $C002
-    stz $C073
+    sta RDMAIN
+    stz RAMWORKS
     pla
     bmi .Lrows_storeok
-    sta $C000
+    sta STOREOFF
 .Lrows_storeok:
     pla
     bmi .Lrows_hiresok
-    sta $C056
+    sta LORES
 .Lrows_hiresok:
     pla
     bpl .Lrows_pageok
-    sta $C055
+    sta PAGE2
 .Lrows_pageok:
     plp
     rts
@@ -730,7 +750,7 @@ tiny_mac65_aux_rows:
 ; set once per call and the loop is a lookup and a 24-bit add per element.
 ;   tiny_mac65_axpy_begin  clears the sums
 ;   tiny_mac65_aux_axpy    sums[i] += tiny_mac_coeff * value[i]; tiny_mac_a =
-;                          auxiliary address of the 24 values, tiny_mac_rows =
+;                          auxiliary address of the 24 biased values, tiny_mac_rows =
 ;                          bank, tiny_mac_coeff = 1..127
 ;   tiny_mac65_axpy_end    writes the sums to tiny_mac_acc as int32
 ; At most 128 calls between begin and end. The sums live in the activation
@@ -756,15 +776,15 @@ tiny_mac65_aux_axpy:
     php
     sei
     cld
-    lda $C01C
+    lda RDPAGE2
     pha
-    lda $C01D
+    lda RDHIRES
     pha
-    lda $C018
+    lda RDSTORE
     pha
-    sta $C054
-    sta $C057
-    sta $C001
+    sta PAGE1
+    sta HIRES
+    sta STOREON
     lda tiny_mac_a
     sta .Lax_value+1
     lda tiny_mac_a+1
@@ -786,14 +806,12 @@ tiny_mac65_aux_axpy:
     sta tm2+1
     inc .Lax_terms
     lda tiny_mac_rows
-    sta $C073
-    sta $C003
+    sta RAMWORKS
+    sta RDAUX
     ldx #AXN-1
 .Lax_loop:
 .Lax_value:
-    lda $ffff,x
-    eor #$80
-    tay
+    ldy $ffff,x             ; bank stores cached value + 128
     sec
     lda (tp1),y
     sbc (tm1),y
@@ -813,19 +831,19 @@ tiny_mac65_aux_axpy:
 .Lax_next:
     dex
     bpl .Lax_loop
-    sta $C002
-    stz $C073
+    sta RDMAIN
+    stz RAMWORKS
     pla
     bmi .Lax_storeok
-    sta $C000
+    sta STOREOFF
 .Lax_storeok:
     pla
     bmi .Lax_hiresok
-    sta $C056
+    sta LORES
 .Lax_hiresok:
     pla
     bpl .Lax_pageok
-    sta $C055
+    sta PAGE2
 .Lax_pageok:
     plp
     rts
