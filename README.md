@@ -336,7 +336,7 @@ Possible future work:
 
 **v0.2 (LLVM-MOS):** The new assembly wide arithmetic test passed in MAME. The complete executable fits in the standard LLVM-MOS memory layout, launches through Bitsy Bye and processes input considerably faster than v0.1 in a preliminary side-by-side test. Both versions retain the same model format and architecture.
 
-The versions are maintained in parallel. The runtime-kernel build has been checked against the portable reference in MAME. Its physical Appletini timing is pending.
+The versions are maintained in parallel. The runtime-kernel build matched the portable reference in MAME. On a physical Appletini, the France prompt took 10 seconds to the first character and 29 seconds to the complete answer. See the [benchmark comparison](v0.2-llvm-mos/OPTIMIZATION.md#runtime-kernels-2026-11-28).
 
 ## Acknowledgements and licensing
 

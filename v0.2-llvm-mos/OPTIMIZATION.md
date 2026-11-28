@@ -11,7 +11,9 @@ The comparison starts at merged upstream `0538aa9`, which already includes the s
 | Whale, complete 24-character answer | 1,737.5 s | 1,548.4 s | 10.9% |
 | Cold boot to input prompt | 49.6 s | 56.8 s | 7.2 s longer |
 
-The exact prompts were `WHAT IS THE CAPITAL OF FRANCE?` and `IS A WHALE A FISH`. Both builds answered `The capital of France is Paris.` and `No, a whale is a mammal.` respectively. Both used the same installed ROM set, for which MAME reports checksum differences on `341-0132-d.e12` and `sc01a.bin`. The physical Appletini comparison is pending.
+The exact prompts were `WHAT IS THE CAPITAL OF FRANCE?` and `IS A WHALE A FISH`. Both builds answered `The capital of France is Paris.` and `No, a whale is a mammal.` respectively. Both used the same installed ROM set, for which MAME reports checksum differences on `341-0132-d.e12` and `sc01a.bin`.
+
+On November 28, the tester reported **10 s to the first character and 29 s total** for the France prompt on a physical Appletini running the runtime-kernel image (`f2ae9e5`). The previous eight-row hardware run took 12 s and 31 s respectively. At whole-second precision, both runs took 19 s from the first character to completion.
 
 Two intermediate builds isolate the rescaler and ReLU changes. All four stages produced the same France answer.
 
