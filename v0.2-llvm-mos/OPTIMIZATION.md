@@ -1,4 +1,61 @@
-# Optimization notes (Stage 12E baseline)
+# Inference performance
+
+## Runtime kernels, 2026-11-28
+
+The comparison starts at merged upstream `0538aa9`, which already includes the sparse eight-row kernel. Both images booted in MAME 0.289 with `apple2ee -aux rw3 -sl7 cffa202` and the same TNI6 model. Times are emulated seconds from submitting the question, including prompt processing and answer generation. The first-character measurement observes the 40-column text screen.
+
+| Measurement | Merged main | Runtime kernels | Time saved |
+| --- | ---: | ---: | ---: |
+| France, first visible answer character | 1,068.5 s | 950.1 s | 11.1% |
+| France, complete 31-character answer | 2,688.2 s | 2,409.2 s | 10.4% |
+| Whale, complete 24-character answer | 1,737.5 s | 1,548.4 s | 10.9% |
+| Cold boot to input prompt | 49.6 s | 56.8 s | 7.2 s longer |
+
+The exact prompts were `WHAT IS THE CAPITAL OF FRANCE?` and `IS A WHALE A FISH`. Both builds answered `The capital of France is Paris.` and `No, a whale is a mammal.` respectively. Both used the same installed ROM set, for which MAME reports checksum differences on `341-0132-d.e12` and `sc01a.bin`.
+
+On November 28, the tester reported **10 s to the first character and about 28 s total** for the France prompt on a physical Appletini running the runtime-kernel image (`f2ae9e5`). The previous eight-row hardware run took 12 s and 31 s respectively. The first character appeared 2 s sooner, and the full answer took about 3 s less (roughly 10%). The time after the first character fell from about 19 s to 18 s.
+
+Two intermediate builds isolate the rescaler and ReLU changes. All four stages produced the same France answer.
+
+| France build | Emulated time | Incremental saving |
+| --- | ---: | ---: |
+| Merged main | 2,688.2 s | |
+| Biased weights and cache bytes, shared Q/K/V preparation, zero-input quantizer shortcut and batched attention coefficients | 2,573.5 s | 114.7 s |
+| Generated rescaler, ordinary F1 | 2,481.0 s | 92.5 s |
+| Generated rescaler and ReLU-aware F1 | 2,409.2 s | 71.8 s |
+
+- Biasing banked bytes during loading or cache storage lets the matrix and attention value loops use `LDY abs,X` directly. Embedding and position rows reverse the transform in their staging buffer. The disk model keeps its original bytes.
+- K, V and Q share a prepared input until the first attention head replaces it. Cache-only prompt steps retain the last-layer early return. Zero q8 inputs bypass fractional division. Attention compares each numerator against the shared maximum shifted right eight bits before doing the full rounded division.
+- After the model closes, the program claims `$0C00–$0FFF` in the ProDOS bitmap. A one-time emitter writes 797 bytes of straight-line code for 3×3-byte and 6×2-byte multiplication using the linked lookup tables. Normal exit releases those pages. F1 tracks the greatest negative magnitude across batches so that sparse rescaling preserves the original packing exponent.
+- The exponential table stores its entries in three runs of 354 three-byte, 355 two-byte and 443 one-byte values. Startup expands the narrow runs into the original three-byte auxiliary layout using the idle inference scratch buffer. The SYS is 36,061 bytes, leaving 547 bytes under the ProDOS load limit.
+
+### Per-vector F2 unrolling experiment
+
+`python3 tests/bench-f2-unroll.py` replays all 218 F2 vectors from the France run in cc65's `sim65`. The harness checks all 20,928 output records against integer arithmetic. It gives the candidate 60 preinstalled instruction slots in the protected window, patches only three column operands per slot, and falls back to the regular kernel on partial batches and oversized vectors. 182 vectors fit. The flat simulation excludes accelerator video-write waits.
+
+| F2 column traversal | Cycles for the replay |
+| --- | ---: |
+| Linked nonzero-column loop | 69,019,996 |
+| Unrolled slots, including target-side preparation | 69,105,797 |
+| Unrolled slots assuming free preparation | 68,745,206 |
+
+Patching cost 360,591 cycles across the trace and recovered 274,790 in execution. The boot image uses the faster linked-column traversal.
+
+### Reproduce the checks
+
+Run from `v0.2-llvm-mos` with the Apple IIe ROMs and CFFA firmware configured in MAME. Use each revision's `tiny.po` with the runtime branch's timing script.
+
+```sh
+TINY_TIMING=1 mame apple2ee -aux rw3 -sl7 cffa202 -hard1 tiny.po \
+  -natural -nothrottle -video none -sound none -skip_gameinfo \
+  -autoboot_script tests/mame-profile.lua
+```
+
+`TINY_QUESTION` selects another prompt. Set `TINY_CHECK=1` to print logit hashes. These modes run without a symbol map. Compare hashes with `tiny-linux --check -m TINY.INT -q <question>`. All 122 native hash rows matched the upstream portable reference across the France and whale prompts and a 72-character input. In MAME, `QUIT` released the four read-ahead pages after inference initialization. The France stack watermark reached `$BE60` (160 bytes). The LLVM-MOS simulator also exercises zero/maximum counts, bank-tail batch sizes, signed products, F1 ties and the generated-code buffer guards via `make sim-test`.
+
+The verified 800 KiB ProDOS image has SHA-256 `034366f3384111ccd0c0453b0c9ce4db40c69da99ab96cd141c403ccdc5f9cc0`. Its `TINY.SYSTEM` has SHA-256 `320bf951f42c474a8abdb5b0b1460637d7126aa26d269f5fd06eb1d6aa869193`.
+
+## Stage 12E baseline and earlier optimization work
 
 Measured 2026-11-27 in MAME (`apple2ee -aux rw3`), one question
 (`WHAT IS THE CAPITAL OF FRANCE?`, 31-character answer, 62 inference steps).

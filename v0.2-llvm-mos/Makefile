@@ -52,22 +52,25 @@ MACBENCH.SYSTEM: $(TESTDIR)/tiny-mac65-test.c tiny-mac65-mos.s tiny-qsquare-mos.
 	$(MOSCC) $(MOSFLAGS) $(MACFLAGS) -Wa,--defsym,TINY_MAC_GENERAL=1 -I. -DTINY_MAC_BENCH $^ -o $@
 
 # Assembly kernels against C arithmetic, in the LLVM-MOS simulator.
-sim-test: asm-test.sim
+sim-test: asm-test.sim q8-test.sim
 	$(SIM) --cmos asm-test.sim
+	$(SIM) --cmos q8-test.sim
 asm-test.sim: $(TESTDIR)/tiny-asm-test.c tiny-wide-mos.s tiny-mac65-mos.s tiny-qsquare-mos.s tiny-wide.h
-	$(SIMCC) -mcpu=mos65c02 -Os $(MACFLAGS) -Wa,--defsym,TINY_MAC_GENERAL=1 $(MACASM) -I. $(TESTDIR)/tiny-asm-test.c tiny-wide-mos.s tiny-mac65-mos.s tiny-qsquare-mos.s -o $@
+	$(SIMCC) -mcpu=mos65c02 -Os $(MACFLAGS) -Wa,--defsym,TINY_MAC_GENERAL=1 -Wa,--defsym,TINY_MAC_SIM=1 $(MACASM) -I. $(TESTDIR)/tiny-asm-test.c tiny-wide-mos.s tiny-mac65-mos.s tiny-qsquare-mos.s -o $@
+q8-test.sim: $(TESTDIR)/tiny-q8-test.c tiny-wide-mos.s tiny-qsquare-mos.s tiny-wide.h
+	$(SIMCC) -mcpu=mos65c02 -Os -I. $(TESTDIR)/tiny-q8-test.c tiny-wide-mos.s tiny-qsquare-mos.s -o $@
 
 # Portable C references and host-only substitutes for hardware/MLI.
 host: tiny-linux tiny-reader-linux tiny-apple-mock
 tiny-linux: tiny.c Makefile
-	$(HOSTCC) $(HOSTFLAGS) -DTINY_SMALL $(EXTRA) tiny.c -o $@
+	$(HOSTCC) $(HOSTFLAGS) -DTINY_SMALL $(filter-out -DTINY_AUX0_LUT,$(EXTRA)) tiny.c -o $@
 tiny-reader-linux: tiny.c tiny-prodos.c tiny-prodos.h Makefile
-	$(HOSTCC) $(HOSTFLAGS) -DTINY_SMALL -DTINY_TEST_READER -DTINY_PRODOS_HOST_TEST $(EXTRA) tiny.c tiny-prodos.c -o $@
+	$(HOSTCC) $(HOSTFLAGS) -DTINY_SMALL -DTINY_TEST_READER -DTINY_PRODOS_HOST_TEST $(filter-out -DTINY_AUX0_LUT,$(EXTRA)) tiny.c tiny-prodos.c -o $@
 tiny-apple-mock: tiny.c tiny-prodos.c tiny-prodos.h tiny-rw65.h $(TESTDIR)/host-mock.c Makefile
 	$(HOSTCC) $(HOSTFLAGS) -I. -DTINY_MOS -DTINY_PRODOS_HOST_TEST $(EXTRA) tiny.c tiny-prodos.c $(TESTDIR)/host-mock.c -o $@
 
 clean:
-	rm -f asm-test.sim asm-test.sim.elf TINY.SYSTEM 'TINY.SYSTEM#FF2000' tiny-build.po FILETEST.SYSTEM RWTEST.SYSTEM MACTEST.SYSTEM WIDETEST.SYSTEM MACFULL.SYSTEM MACBENCH.SYSTEM *.SYSTEM.elf tiny-mos.map wide-test.map tiny-linux tiny-reader-linux tiny-apple-mock
+	rm -f asm-test.sim asm-test.sim.elf q8-test.sim q8-test.sim.elf TINY.SYSTEM 'TINY.SYSTEM#FF2000' tiny-build.po FILETEST.SYSTEM RWTEST.SYSTEM MACTEST.SYSTEM WIDETEST.SYSTEM MACFULL.SYSTEM MACBENCH.SYSTEM *.SYSTEM.elf tiny-mos.map wide-test.map tiny-linux tiny-reader-linux tiny-apple-mock
 
 test: tiny.po
 	mame -w apple2ee -aux rw3 -sl7 cffa202 -hard1 tiny.po -nothrottle -natural -console -frameskip 0

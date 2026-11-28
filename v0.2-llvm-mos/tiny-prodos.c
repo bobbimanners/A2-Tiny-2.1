@@ -28,6 +28,18 @@ static uint8_t pd_close(void) { int r=fclose(host);host=NULL;return r?0x27:0; }
 #else
 #define READ_BUFFER ((const uint8_t *)(uintptr_t)0x0c00u)
 #define BITMAP_08 (*(volatile uint8_t *)(uintptr_t)0xbf59u)
+/* Pages $0C-$0F are the four low bits of this ProDOS bitmap byte.
+ * After CLOSE, inference reuses the model read-ahead area for code. */
+static uint8_t code_claimed;
+void *tiny_claim_rescale_code(void) {
+    if(file.ref || (BITMAP_08 & 0x0f))return NULL;
+    BITMAP_08 |= 0x0f;
+    code_claimed=1;
+    return (void *)(uintptr_t)0x0c00u;
+}
+void tiny_release_rescale_code(void) {
+    if(code_claimed){BITMAP_08 &= 0xf0;code_claimed=0;}
+}
 /* Explicit byte arrays avoid any struct-layout/packing dependency. */
 extern uint8_t tiny_pd_open_pb[6], tiny_pd_read_pb[8], tiny_pd_close_pb[2];
 extern uint8_t tiny_pd_pathname[65];

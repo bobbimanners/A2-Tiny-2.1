@@ -14,6 +14,46 @@ static uint16_t state=12345;
 static uint16_t next(void) {
     state=(uint16_t)(state*25173u+13849u);return state;
 }
+/* Check the shifted cutoff, the actual zero-to-one rounding transition,
+ * both ends of each interval, and the full context batch length. */
+static int test_coefficients(void) {
+    static const uint64_t maxima[] = {0, 1, 127, 253, 254, 255, 256, 257,
+        65535, 65536, 0xffffffffULL, 0x100000000ULL, 1ULL << 41};
+    static Wide scores[128];
+    unsigned i, j, checks = 0;
+    for (i = 0; i < sizeof maxima / sizeof maxima[0]; i++) {
+        uint64_t b = maxima[i], cutoff = b >> 8;
+        Wide maximum = {(uint32_t)b, (uint32_t)(b >> 32)};
+        uint8_t want[128];
+        for (j = 0; j < 128; j++) {
+            uint64_t a;
+            switch (j) {
+                case 0: a = 0; break;
+                case 1: a = b; break;
+                case 2: a = cutoff; break;
+                case 3: a = cutoff < b ? cutoff + 1 : b; break;
+                case 4: a = b / 254; break;
+                case 5: a = (b + 253) / 254; break;
+                default: a = (b * next()) >> 16; break;
+            }
+            scores[j].lo = (uint32_t)a;
+            scores[j].hi = (uint32_t)(a >> 32);
+            want[j] = b ? (uint8_t)((127 * a + b / 2) / b) : 0;
+        }
+        output[0] = output[129] = -99;
+        tiny_attention_coeffs(scores, &maximum, output + 1, 128);
+        for (j = 0; j < 128; j++) {
+            if (output[j + 1] != want[j] ||
+                tiny_attention_coeff(&scores[j], &maximum) != want[j]) {
+                printf("COEFFICIENT FAIL: %u, %u\n", i, j);return 1;
+            }
+            checks += 2;
+        }
+        if (output[0] != -99 || output[129] != -99) {puts("COEFFICIENT GUARD FAIL");return 1;}
+    }
+    printf("COEFFICIENT PASS: %u values\n",checks);
+    return 0;
+}
 int main(void) {
     static const uint16_t peaks[]={1,2,3,127,128,129,255,256,257,16384,32766,32767};
     static const uint16_t sizes[]={1,2,24,96,128,255,256};
@@ -42,5 +82,5 @@ int main(void) {
             }
         }
     }
-    printf("Q8 PASS: %u values\n",checks);return 0;
+    printf("Q8 PASS: %u values\n",checks);return test_coefficients();
 }

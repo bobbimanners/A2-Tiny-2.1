@@ -12,4 +12,8 @@ int tiny_model_getc(TinyModel *f);
 int tiny_model_error(TinyModel *f);
 int tiny_model_close(TinyModel *f);
 void tiny_model_abort(void);
+#ifndef TINY_PRODOS_HOST_TEST
+void *tiny_claim_rescale_code(void);
+void tiny_release_rescale_code(void);
+#endif
 #endif
